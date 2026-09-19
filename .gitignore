@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.env
+*.env
+!.env.example
+node_modules/
+dist/
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+celerybeat-schedule
+*.sqlite
+*.sqlite3
+*.log
+.DS_Store
+postgres_data/
