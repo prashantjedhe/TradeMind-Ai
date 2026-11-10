@@ -1,9 +1,8 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import PageLayout from '../components/common/PageLayout'
+import axiosClient from '../api/axiosClient'
 
 function BacktestPage() {
-  const navigate = useNavigate()
   const [ticker, setTicker] = useState('RELIANCE')
   const [years, setYears] = useState(2)
   const [loading, setLoading] = useState(false)
@@ -18,15 +17,12 @@ function BacktestPage() {
     setResult(null)
     setWfoResult(null)
     try {
-      const token = localStorage.getItem('trademind-auth') ? JSON.parse(localStorage.getItem('trademind-auth'))?.accessToken : null
-      const headers = { 'Content-Type': 'application/json' }
-      if (token) headers['Authorization'] = `Bearer ${token}`
-      const res = await fetch(`/api/v1/backtest/run?ticker=${ticker}&years=${years}`, { headers })
-      if (!res.ok) throw new Error('Backtest failed')
-      const data = await res.json()
+      const { data } = await axiosClient.post('/backtest/run', null, {
+        params: { ticker, years },
+      })
       setResult(data)
     } catch (err) {
-      setError(err.message)
+      setError(err.response?.data?.detail || err.message || 'Backtest failed')
     } finally {
       setLoading(false)
     }
@@ -38,23 +34,18 @@ function BacktestPage() {
     setError('')
     setWfoResult(null)
     try {
-      const token = localStorage.getItem('trademind-auth') ? JSON.parse(localStorage.getItem('trademind-auth'))?.accessToken : null
-      const headers = { 'Content-Type': 'application/json' }
-      if (token) headers['Authorization'] = `Bearer ${token}`
-      const res = await fetch(`/api/v1/backtest/walk-forward?ticker=${ticker}`, { headers })
-      if (!res.ok) throw new Error('Walk-forward failed')
-      const data = await res.json()
+      const { data } = await axiosClient.post('/backtest/walk-forward', null, {
+        params: { ticker },
+      })
       setWfoResult(data)
     } catch (err) {
-      setError(err.message)
+      setError(err.response?.data?.detail || err.message || 'Walk-forward failed')
     } finally {
       setLoading(false)
     }
   }
 
   const equityData = result?.equity_curve?.values || []
-  const wfoEquityData = wfoResult?.equity_curve?.values || []
-
   return (
     <PageLayout>
       <div className="animate-rise space-y-8">
@@ -102,16 +93,27 @@ function BacktestPage() {
           <div className="grid gap-6 lg:grid-cols-3">
             <div className="glass rounded-2xl p-6">
               <h3 className="font-display text-lg font-semibold text-white mb-4">Standard Backtest</h3>
-              <div className="space-y-3">
-                <StatBlock label="Sharpe" value={result.sharpe?.toFixed(2)} />
-                <StatBlock label="CAGR" value={`${(result.cagr * 100)?.toFixed(1)}%`} />
-                <StatBlock label="Max Drawdown" value={`${(result.max_drawdown * 100)?.toFixed(1)}%`} />
-                <StatBlock label="Win Rate" value={`${(result.win_rate * 100)?.toFixed(1)}%`} />
-                <StatBlock label="Total Trades" value={result.total_trades} />
-                <StatBlock label="Final Equity" value={`₹${result.final_equity?.toLocaleString('en-IN', {maximumFractionDigits: 0})}`} />
-              </div>
+              {result.status === 'FAILED' ? (
+                <p className="text-sm text-rose-300">{result.error_message || 'The backtest could not be completed.'}</p>
+              ) : (
+                <>
+                  <div className="space-y-3">
+                    <StatBlock label="Sharpe" value={result.sharpe?.toFixed(2)} />
+                    <StatBlock label="CAGR" value={`${(result.cagr * 100)?.toFixed(1)}%`} />
+                    <StatBlock label="Max Drawdown" value={`${(result.max_drawdown * 100)?.toFixed(1)}%`} />
+                    <StatBlock label="Win Rate" value={`${(result.win_rate * 100)?.toFixed(1)}%`} />
+                    <StatBlock label="Total Trades" value={result.total_trades} />
+                    <StatBlock label="Final Equity" value={`₹${result.final_equity?.toLocaleString('en-IN', {maximumFractionDigits: 0})}`} />
+                  </div>
+                  {result.total_trades === 0 && (
+                    <p className="mt-4 text-xs text-amber-300">
+                      No trades were generated in this period. Check the strategy conditions and available historical data.
+                    </p>
+                  )}
+                </>
+              )}
             </div>
-            {equityData.length > 0 && (
+            {result.status !== 'FAILED' && equityData.length > 1 && (
               <div className="glass rounded-2xl p-6 lg:col-span-2">
                 <h3 className="font-display text-lg font-semibold text-white mb-4">Equity Curve</h3>
                 <div className="h-64">

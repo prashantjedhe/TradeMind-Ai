@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.order import OrderType, OrderSide, OrderStatus, TriggeredBy, SettlementType
 
@@ -70,5 +70,21 @@ class OrderResponse(BaseModel):
     created_at: datetime
     filled_at: datetime | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TradeProposalResponse(BaseModel):
+    id: uuid.UUID
+    strategy_id: uuid.UUID | None
+    ticker: str
+    side: str
+    quantity: int
+    settlement_type: str
+    limit_price: Decimal
+    status: str
+    rationale: str
+    evidence: dict
+    created_at: datetime
+    expires_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

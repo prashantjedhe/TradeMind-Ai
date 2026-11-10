@@ -1,11 +1,8 @@
-"""
-Backtesting + Walk-Forward engine (float-only, no Decimal).
+"""Standard backtest orchestration and walk-forward evaluation.
 
-Standard backtest: replay a strategy against OHLCV bars with
-slippage + fee model, compute CAGR, Sharpe, max drawdown, win rate.
-
-Walk-forward: rolling 3yr train / 1yr test windows.
-Efficiency Ratio = OOS Sharpe ÷ IS Sharpe.
+Standard backtests use the Decimal-based OHLCV replay engine and its
+closed-trade metrics. Walk-forward validation retains rolling 3yr/1yr
+windows and its in-sample/out-of-sample efficiency ratio.
 """
 
 from __future__ import annotations
@@ -13,20 +10,28 @@ from __future__ import annotations
 import logging
 import math
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import numpy as np
 import pandas as pd
-from types import SimpleNamespace
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.backtest_copy_league import (
     BacktestResult, BacktestStatus,
 )
-from app.models.strategy import Strategy, StrategyStatus
+from app.models.strategy import Strategy, StrategyStatus, StrategyActionOrderType
 from app.models.user import User
 from app.models.order import OrderSide, SettlementType
 from app.models.ohlcv import OHLCVBar, BarInterval
+from app.services.backtest_engine import (
+    BacktestConfig,
+    BacktestSpec,
+    compute_metrics as compute_engine_metrics,
+    equity_to_json,
+    simulate_strategy,
+)
 from app.services.strategy_service import evaluate_condition_tree, required_bars_for_tree
 from app.utils.indicators import compute_indicator
 
@@ -106,26 +111,94 @@ async def run_backtest(
     df = await load_backtest_df(db, ticker, interval, start_date, end_date, limit)
 
     if df.empty:
-        return _create_empty_result(db, user, strategy_id, ticker, timeframe, start_date, end_date)
+        result = _create_empty_result(
+            db, user, strategy_id, ticker, timeframe, start_date, end_date,
+            error_message=f"No {timeframe} OHLCV data found for {ticker} in the selected date range.",
+        )
+        await db.commit()
+        await db.refresh(result)
+        return result
 
     strategy = None
     if strategy_id:
-        result = await db.execute(select(Strategy).where(Strategy.id == strategy_id))
+        result = await db.execute(
+            select(Strategy).where(
+                Strategy.id == strategy_id,
+                Strategy.user_id == user.id,
+            )
+        )
         strategy = result.scalar_one_or_none()
-    if strategy is None and strategy_config:
+        if strategy is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="The selected strategy was not found for this user.",
+            )
+
+    if strategy is not None:
+        spec = BacktestSpec(
+            root_condition=strategy.root_condition,
+            action_side=strategy.action_side,
+            action_order_type=strategy.action_order_type,
+            action_quantity=strategy.action_quantity,
+            action_settlement_type=strategy.action_settlement_type,
+            action_limit_price=(
+                Decimal(str(strategy.action_limit_price))
+                if strategy.action_limit_price is not None else None
+            ),
+            ticker=ticker,
+        )
+    elif strategy_config:
         action = strategy_config.get("action") or {}
-        strategy = SimpleNamespace(
+        spec = BacktestSpec(
             root_condition=strategy_config.get("root_condition"),
             action_side=OrderSide(action.get("side", OrderSide.BUY)),
-            action_order_type=action.get("order_type", "MARKET"),
+            action_order_type=StrategyActionOrderType(action.get("order_type", "MARKET")),
             action_quantity=int(action.get("quantity", 1)),
-            action_settlement_type=SettlementType(action.get("settlement_type", SettlementType.INTRADAY)),
-            action_limit_price=action.get("limit_price"),
+            action_settlement_type=SettlementType(action.get("settlement_type", "INTRADAY")),
+            action_limit_price=(
+                Decimal(str(action["limit_price"]))
+                if action.get("limit_price") is not None else None
+            ),
+            ticker=ticker,
+        )
+    else:
+        spec = BacktestSpec(
+            root_condition=None,
+            action_side=OrderSide.BUY,
+            action_order_type=StrategyActionOrderType.MARKET,
+            action_quantity=1,
+            action_settlement_type=SettlementType.INTRADAY,
+            action_limit_price=None,
+            ticker=ticker,
         )
 
-    equity_curve, trades = _simulate_strategy(df, strategy, initial_capital)
-    metrics = compute_metrics(equity_curve)
-    metrics["total_trades"] = len(trades)
+    if spec.action_order_type == StrategyActionOrderType.LIMIT and spec.action_limit_price is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A limit price is required for a LIMIT backtest action.",
+        )
+
+    capital = Decimal(str(initial_capital))
+    simulation = simulate_strategy(
+        df,
+        spec,
+        BacktestConfig(initial_capital=capital, sl_pct=None, tp_pct=None),
+        trade_start=start_date,
+        trade_end=end_date,
+    )
+    if simulation.error:
+        result = _create_empty_result(
+            db, user, strategy_id, ticker, timeframe, start_date, end_date,
+            error_message=simulation.error,
+        )
+        result.initial_capital = initial_capital
+        result.final_equity = float(capital)
+        result.equity_curve = equity_to_json(simulation.equity)
+        await db.commit()
+        await db.refresh(result)
+        return result
+
+    metrics = compute_engine_metrics(simulation.equity, simulation.trades, initial_capital)
 
     result = BacktestResult(
         user_id=user.id, strategy_id=strategy_id,
@@ -139,7 +212,24 @@ async def run_backtest(
         total_pnl=metrics["total_pnl"],
         final_equity=metrics["final_equity"],
         initial_capital=initial_capital,
-        equity_curve=_equity_to_json(equity_curve),
+        total_fees=metrics["total_fees"],
+        equity_curve=equity_to_json(simulation.equity),
+        trade_ledger=[
+            {
+                "timestamp": trade.timestamp,
+                "side": trade.side,
+                "order_type": trade.order_type,
+                "reason": trade.reason,
+                "price": trade.price,
+                "qty": trade.qty,
+                "fees": trade.fees,
+                "cash_after": trade.cash_after,
+                "pnl": trade.pnl,
+                "position_after": trade.position_after,
+            }
+            for trade in simulation.trades
+        ],
+        assumptions={"notes": simulation.notes},
     )
     db.add(result)
     await db.commit()
@@ -228,12 +318,13 @@ def _equity_to_json(equity: pd.Series) -> dict:
 
 
 def _create_empty_result(
-    db: AsyncSession, user: User, strategy_id, ticker, timeframe, start_date, end_date
+    db: AsyncSession, user: User, strategy_id, ticker, timeframe, start_date, end_date,
+    error_message: str = "No valid historical market data is available for this backtest.",
 ) -> BacktestResult:
     result = BacktestResult(
         user_id=user.id, strategy_id=strategy_id, ticker=ticker,
         timeframe=timeframe, start_date=start_date, end_date=end_date,
-        status=BacktestStatus.FAILED,
+        status=BacktestStatus.FAILED, error_message=error_message,
     )
     db.add(result)
     return result
@@ -253,7 +344,13 @@ async def run_walk_forward(
     df = await load_backtest_df(db, ticker, interval, start_date, end_date, limit)
 
     if df.empty:
-        return _create_empty_result(db, user, strategy_id, ticker, timeframe, start_date, end_date)
+        result = _create_empty_result(
+            db, user, strategy_id, ticker, timeframe, start_date, end_date,
+            error_message=f"No {timeframe} OHLCV data found for {ticker} in the selected date range.",
+        )
+        await db.commit()
+        await db.refresh(result)
+        return result
 
     strategy = None
     if strategy_id:

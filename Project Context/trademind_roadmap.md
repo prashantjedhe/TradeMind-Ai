@@ -1,6 +1,6 @@
 # TradeMind AI — 16-Week Build Plan
 
-**10 features · 8 phases · 5/8 complete**
+**10 features · 8 planned phases · Phase 8 in progress (Copy Trading removed)**
 
 > Full project details: [trademind_master_context.md](trademind_master_context.md)
 > App flow & user journeys: [trademind_app_flow.md](trademind_app_flow.md)
@@ -57,14 +57,14 @@
 
 | Tasks — NLP Pipeline | Tasks — Impact + Actions |
 |----------------------|--------------------------|
-| FinBERT singleton (EN only) + bilingual lexicon (HI) | Weighted-blend formula: polarity × (sector + source + recency) |
+| FinBERT signed polarity + bilingual lexicon (HI) | Attenuated impact: polarity × sector × source × recency |
 | Hybrid scorer: signed polarity, budget guard | HIGH/MEDIUM/LOW bands, env-tunable thresholds |
 | RAKE keyword extraction (EN only, <5ms/article) | Auto-pause strategy, tighten SL, reduce lot size |
 | Expert-system sector mapper: 63 tickers, 180+ keywords | User-triggered exit-on-news (MARKET SELL) |
 | Google News RSS (EN+HI), 40 feeds/5min cycle | Claude strategy advisor + AI trade journal (fail-soft) |
-| | Decay-weighted aggregation + z-score vs 7-day baseline |
+| Decay-weighted aggregation + z-score vs 7-day baseline | Explainable factors + 15m/1h/1d outcome study |
 
-**🏁 FinBERT scores news, trades react automatically**
+**News impact can trigger configured safeguards; outcome study is research-only and does not generate trades.**
 
 ---
 
@@ -84,37 +84,23 @@
 
 ---
 
-## Phase 6 — Copy Trading ⬜ NEXT
-**Week 10**
+## Phase 7 — League + Competition Mode ✅ DONE
+**Weeks 10–12**
 
 | Tasks | Deliverables |
 |-------|-------------|
-| Strategy publish/unpublish toggle | Follower gets mirrored trade on publisher fire |
-| Follower model: user → strategy subscription | Public strategy marketplace page |
-| Trade replication at follow ratio | Risk settings per follower respected |
-| Risk controls: max allocation cap, SL override | |
-| Marketplace + leaderboard (return-ranked) | |
+| League model: Competition, LeagueEntry, Badge (6 types) | League page: live rank table + badge showcase |
+| Real metrics calculated from live paper orders | Annualized Sharpe, Return %, Drawdown, Win Rate, Realised P&L |
+| Celery daily beat: auto-finalize expired competitions | Automated competition finalization at end date |
+| Sharpe Ratio leaderboard ranking query | Sharpe-ranked leaderboard with usernames |
+| Badge logic: Top Trader, Drawdown Master, Consistent Performer, News Ninja, First Win | Automatic badge awards on finalization |
+| Clean React 19 UI with tabs (All Leagues, My Entries, Create) | Full end-to-end integration via axiosClient |
 
-**🏁 Copy trade replicated**
-
----
-
-## Phase 7 — League + Competition Mode ⬜ PENDING
-**Weeks 11–12**
-
-| Tasks | Deliverables |
-|-------|-------------|
-| League model: Competition, LeagueEntry, Badge | League page: live rank table + badge showcase |
-| Monthly Celery beat: reset balances on 1st | Monthly competition auto-reset |
-| Sharpe Ratio leaderboard ranking query | Sharpe-ranked leaderboard |
-| Badge logic: Consistent Performer, Drawdown Master, News Ninja | |
-| Trophy + marketplace highlight at month end | |
-
-**🏁 League system live**
+**🏁 League system live end-to-end**
 
 ---
 
-## Phase 8 — Testing, Polish & Deployment ⬜ PENDING
+## Phase 8 — Testing, Polish & Deployment 🔄 IN PROGRESS
 **Weeks 13–16**
 
 | Tasks | Deliverables |
@@ -135,5 +121,5 @@
 
 | | |
 |---|---|
-| **16** weeks total | **10** features |
-| **3** AI engines | **6/8** milestones done |
+| **16** weeks total | **9** active features (Copy Trading removed) |
+| **3** AI engines | **7/8** milestones done |

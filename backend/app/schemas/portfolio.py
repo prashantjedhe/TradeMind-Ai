@@ -1,7 +1,7 @@
 import uuid
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.models.portfolio import PositionStatus
 
@@ -16,8 +16,7 @@ class PositionSummary(BaseModel):
     realised_pnl: Decimal
     status: PositionStatus
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PortfolioSummaryResponse(BaseModel):

@@ -23,6 +23,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,7 +31,11 @@ from app.config import settings
 from app.models.news import NewsArticle, NewsSentiment
 from app.services.news_keywords import extract_keywords, finance_tags
 from app.services.news_sector import resolve_sector
-from app.services.news_sentiment import reset_finbert_budget, score_article_hybrid
+from app.services.news_sentiment import (
+    MODEL_VERSION,
+    reset_finbert_budget,
+    score_article_hybrid,
+)
 from app.services.news_universe import TICKER_META, tickers_for_text
 
 logger = logging.getLogger(__name__)
@@ -175,7 +180,40 @@ async def ingest_cycle(db: AsyncSession, tickers: list[str] | None = None) -> di
             await db.commit()
             scored = len(sent_rows)
 
+    # Refresh recent rows scored with the previous polarity/impact logic.
+    # This is a one-time bounded pass per model version; the saved version
+    # prevents repeating expensive inference on later five-minute cycles.
+    legacy_rows = (await db.execute(
+        select(NewsSentiment, NewsArticle.title, NewsArticle.body)
+        .join(NewsArticle, NewsSentiment.article_id == NewsArticle.id)
+        .where(
+            NewsArticle.published_at >= now - timedelta(
+                minutes=max(settings.NEWS_WINDOWS_MINUTES)
+            ),
+            NewsSentiment.model_version.in_(
+                ("finbert-ProsusAI-v1", "lexicon-bilingual-v1")
+            ),
+        )
+    )).all()
+    rescored = 0
+    for sentiment, title, body in legacy_rows:
+        result = score_article_hybrid(title, body or "")
+        sentiment.score = result["score"]
+        sentiment.magnitude = result["magnitude"]
+        sentiment.label = result["label"]
+        sentiment.model_version = result.get("model", MODEL_VERSION)
+        sentiment.spans = {
+            "hits": result["spans"],
+            "language": result["language"],
+            "keywords": extract_keywords(title, result.get("language", "en")),
+            "tags": finance_tags(title),
+        }
+        rescored += 1
+    if rescored:
+        await db.commit()
+
     stats = {"fetched": fetched, "candidates": len(candidates),
-             "articles_inserted": len(inserted_ids), "sentiment_rows": scored}
+             "articles_inserted": len(inserted_ids), "sentiment_rows": scored,
+             "legacy_rows_rescored": rescored}
     logger.info("News ingest complete: %s", stats)
     return stats

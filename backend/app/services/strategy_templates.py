@@ -915,7 +915,7 @@ TEMPLATES = [
     },
 
     # ───────────────────────────────────────────────────────────────
-    # 19. News-Driven Breakout (pure news trigger, auto-orders)
+    # 19. News-Driven Breakout (signal only; user confirms orders)
     # ───────────────────────────────────────────────────────────────
     {
         "id": "news-bullish-breakout",
@@ -924,15 +924,15 @@ TEMPLATES = [
         "difficulty": "Beginner",
         "ticker": "RELIANCE",
         "timeframe": "15m",
-        "tags": ["news", "sentiment", "auto-order", "english-hindi"],
+        "tags": ["news", "sentiment", "confirmation-required", "english-hindi"],
         "for_news": True,
-        "summary": "Pure news trigger: fires a BUY the moment 1-hour news sentiment crosses above +0.2 on 3+ headlines (EN + Hindi free RSS).",
+        "summary": "News signal: flags a bullish 1-hour sentiment cross on 3+ headlines; no order is submitted without user confirmation.",
         "description": (
             "TradeMind's core news innovation. Headlines in English and Hindi are "
             "scored every 5 minutes; when the decay-weighted 1h sentiment crosses "
-            "above +0.2 with at least 3 articles behind it, the strategy auto-fires "
-            "a paper BUY tagged NEWS_EVENT with the evidence headlines attached. "
-            "No technical indicator involved -- pure news-driven auto-order.\n\n"
+            "above +0.2 with at least 3 articles behind it, the strategy records a "
+            "signal. News-driven orders are not automatic; review a current setup "
+            "and explicitly confirm it on the dashboard before submitting.\n\n"
             "Deploy per ticker; the evaluator re-checks every 60 seconds."
         ),
         "root_condition": {
@@ -950,7 +950,7 @@ TEMPLATES = [
     },
 
     # ───────────────────────────────────────────────────────────────
-    # 20. News Panic Exit (pure news trigger, auto-orders)
+    # 20. News Panic Exit (signal only; user confirms orders)
     # ───────────────────────────────────────────────────────────────
     {
         "id": "news-panic-exit",
@@ -959,14 +959,14 @@ TEMPLATES = [
         "difficulty": "Beginner",
         "ticker": "HDFCBANK",
         "timeframe": "15m",
-        "tags": ["news", "sentiment", "exit", "risk"],
+        "tags": ["news", "sentiment", "exit", "risk", "confirmation-required"],
         "for_news": True,
-        "summary": "Pure news trigger: fires a SELL when 1h sentiment z-score collapses below -2 (abnormally negative vs the 7-day baseline).",
+        "summary": "News signal: flags an unusually negative 1-hour sentiment move; any exit remains user-confirmed.",
         "description": (
             "Catches panic regimes -- fraud probes, SEBI notices, earnings shock -- "
             "by comparing current 1h sentiment against its own 7-day baseline. A "
             "z-score below -2 means this negativity is abnormal, not background "
-            "noise. Auto-fires a paper SELL tagged NEWS_EVENT.\n\n"
+            "noise. It raises a signal only; it never submits an exit automatically.\n\n"
             "Use as a protective overlay alongside any long strategy."
         ),
         "root_condition": {
@@ -993,15 +993,16 @@ TEMPLATES = [
         "difficulty": "Intermediate",
         "ticker": "INFY",
         "timeframe": "1d",
-        "tags": ["news", "rsi", "hybrid", "confirmation"],
+        "tags": ["news", "rsi", "hybrid", "confirmation-required"],
         "for_news": True,
-        "summary": "Hybrid: RSI(14) crosses back above 30 AND 1h news sentiment is positive -- technical bounce confirmed by the news tape.",
+        "summary": "Hybrid signal: RSI(14) crosses back above 30 and 1h news sentiment is positive; order submission still requires user confirmation.",
         "description": (
             "Filters false oversold bounces: the technical turn (RSI crossing back "
             "above 30) only fires when the news tape agrees (1h sentiment above "
             "+0.2 on 3+ headlines). Avoids catching falling knives during genuinely "
             "bad news regimes.\n\n"
-            "The best starter template for trusting the news engine."
+            "This template creates a signal only. Review and explicitly confirm any "
+            "news-driven paper order from the dashboard."
         ),
         "root_condition": {
             "type": "group",

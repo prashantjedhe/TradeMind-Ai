@@ -1,6 +1,9 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Text, Numeric, Integer, DateTime, ForeignKey, func
+from sqlalchemy import (
+    String, Text, Numeric, Integer, DateTime, ForeignKey, Index,
+    UniqueConstraint, SmallInteger, Boolean, func,
+)
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -24,7 +27,7 @@ class NewsArticle(Base):
     )
     source: Mapped[str] = mapped_column(String(60), nullable=False, default="google-news-rss")
     url: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    url_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    url_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False, default="")
     language: Mapped[str] = mapped_column(String(8), nullable=False, default="en")
@@ -38,6 +41,12 @@ class NewsArticle(Base):
 
     sentiment = relationship("NewsSentiment", back_populates="article", uselist=False,
                              cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("url_hash", name="uq_news_articles_url_hash"),
+        Index("ix_news_articles_url_hash", "url_hash"),
+        Index("ix_news_articles_tickers", "tickers", postgresql_using="gin"),
+    )
 
     def __repr__(self) -> str:
         return f"<NewsArticle {self.language} {self.title[:40]!r} tickers={self.tickers}>"
@@ -72,6 +81,10 @@ class NewsSentiment(Base):
 
     article = relationship("NewsArticle", back_populates="sentiment")
 
+    __table_args__ = (
+        Index("ix_news_sentiment_ticker_created", "ticker", "created_at"),
+    )
+
     def __repr__(self) -> str:
         return f"<NewsSentiment {self.ticker} {self.label} {self.score}>"
 
@@ -105,5 +118,53 @@ class NewsSignal(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker", "window_minutes", "timestamp",
+            name="uq_news_signal_bucket",
+        ),
+        Index("ix_news_signals_ticker_band", "ticker", "band"),
+        Index(
+            "ix_news_signals_ticker_window_ts",
+            "ticker",
+            "window_minutes",
+            "timestamp",
+        ),
+    )
+
     def __repr__(self) -> str:
         return f"<NewsSignal {self.ticker} {self.window_minutes}m {self.timestamp} score={self.score} n={self.article_count}>"
+
+
+class NewsSignalOutcome(Base):
+    """Realized, closed-bar outcome for a qualified 15-minute news signal."""
+
+    __tablename__ = "news_signal_outcomes"
+    __table_args__ = (
+        UniqueConstraint("signal_id", "horizon_minutes", name="uq_news_outcome_signal_horizon"),
+        Index("ix_news_outcomes_horizon_target", "horizon_minutes", "target_timestamp"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    signal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("news_signals.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    horizon_minutes: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    forecast_direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    signal_impact: Mapped[float] = mapped_column(Numeric(8, 5), nullable=False)
+    signal_band: Mapped[str] = mapped_column(String(10), nullable=False)
+    source_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    target_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_price: Mapped[float] = mapped_column(Numeric(14, 6), nullable=False)
+    target_price: Mapped[float] = mapped_column(Numeric(14, 6), nullable=False)
+    return_fraction: Mapped[float] = mapped_column(Numeric(12, 8), nullable=False)
+    directional_hit: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    actual_horizon_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    signal = relationship("NewsSignal")

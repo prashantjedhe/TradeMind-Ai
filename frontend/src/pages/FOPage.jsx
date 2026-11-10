@@ -162,7 +162,7 @@ function FOPage() {
       const { data } = await createOrder(payload)
       setResult(data)
       setQuantity('')
-      const [portfolioRes] = await Promise.all([getPortfolioSummary()])
+      const portfolioRes = await getPortfolioSummary()
       setPortfolio(portfolioRes.data)
     } catch (err) {
       setError(err.response?.data?.detail || 'Order failed. Please try again.')

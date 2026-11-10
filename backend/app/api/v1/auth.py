@@ -1,6 +1,7 @@
+import hashlib
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from jose import JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,12 +23,33 @@ from app.services.auth_service import (
     decode_token,
 )
 from app.api.deps import get_current_user, blacklist_token, oauth2_scheme
+from app.services.rate_limiter import enforce_rate_limit
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
+AUTH_LOGIN_LIMIT = 5
+AUTH_LOGIN_WINDOW_SECONDS = 60
+AUTH_REGISTER_LIMIT = 10
+AUTH_REGISTER_WINDOW_SECONDS = 3600
+AUTH_REFRESH_LIMIT = 30
+AUTH_REFRESH_WINDOW_SECONDS = 60
+
+
+def _client_host(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register(payload: UserRegisterRequest, db: AsyncSession = Depends(get_db)):
+async def register(
+    payload: UserRegisterRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    email_digest = hashlib.sha256(payload.email.strip().lower().encode()).hexdigest()
+    await enforce_rate_limit(
+        key=f"auth:register:{email_digest}",
+        max_requests=AUTH_REGISTER_LIMIT,
+        window_seconds=AUTH_REGISTER_WINDOW_SECONDS,
+    )
     existing = await db.execute(
         select(User).where((User.email == payload.email) | (User.username == payload.username))
     )
@@ -46,7 +68,17 @@ async def register(payload: UserRegisterRequest, db: AsyncSession = Depends(get_
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(payload: UserLoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(
+    payload: UserLoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    email_digest = hashlib.sha256(payload.email.strip().lower().encode()).hexdigest()
+    await enforce_rate_limit(
+        key=f"auth:login:{_client_host(request)}:{email_digest}",
+        max_requests=AUTH_LOGIN_LIMIT,
+        window_seconds=AUTH_LOGIN_WINDOW_SECONDS,
+    )
     result = await db.execute(select(User).where(User.email == payload.email))
     user = result.scalar_one_or_none()
 
@@ -64,6 +96,12 @@ async def login(payload: UserLoginRequest, db: AsyncSession = Depends(get_db)):
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(payload: RefreshRequest):
+    token_digest = hashlib.sha256(payload.refresh_token.encode()).hexdigest()
+    await enforce_rate_limit(
+        key=f"auth:refresh:{token_digest}",
+        max_requests=AUTH_REFRESH_LIMIT,
+        window_seconds=AUTH_REFRESH_WINDOW_SECONDS,
+    )
     try:
         decoded = decode_token(payload.refresh_token)
     except JWTError:

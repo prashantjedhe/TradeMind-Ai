@@ -1,8 +1,13 @@
-from datetime import date
+from datetime import date, datetime
+from datetime import time as day_time, timezone
+from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, select
 
 from app.api.deps import get_current_user
 from app.config import settings
+from app.database import get_db
+from app.models.ohlcv import BarInterval, OHLCVBar
 from app.models.user import User
 from app.services.fn_o_service import (
     FNO_UNIVERSE,
@@ -14,8 +19,51 @@ from app.services.fn_o_service import (
     underlying_of,
 )
 from app.services.price_cache_service import get_cached_prices
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/api/v1/market", tags=["market"])
+NSE_TIMEZONE = ZoneInfo("Asia/Kolkata")
+
+
+def daily_change_pct(
+    current_price: float | None,
+    bars: list[tuple[datetime, float]],
+    now: datetime | None = None,
+) -> float | None:
+    """Return today's live move, or the last completed session's move."""
+    if not bars:
+        return None
+
+    reference_now = now or datetime.now(NSE_TIMEZONE)
+    if reference_now.tzinfo is None:
+        reference_now = reference_now.replace(tzinfo=timezone.utc)
+    local_now = reference_now.astimezone(NSE_TIMEZONE)
+    latest_timestamp, latest_close = bars[0]
+    latest_day = latest_timestamp.astimezone(NSE_TIMEZONE).date()
+    market_open = (
+        local_now.weekday() < 5
+        and day_time(9, 15) <= local_now.time() < day_time(15, 30)
+    )
+
+    if market_open:
+        if current_price is None or current_price <= 0:
+            return None
+        if latest_day == local_now.date():
+            if len(bars) < 2:
+                return None
+            reference_close = bars[1][1]
+        else:
+            reference_close = latest_close
+        comparison_price = current_price
+    else:
+        if len(bars) < 2:
+            return None
+        reference_close = bars[1][1]
+        comparison_price = latest_close
+
+    if reference_close <= 0:
+        return None
+    return round((comparison_price / reference_close - 1) * 100, 2)
 
 
 @router.get("/watchlist")
@@ -24,15 +72,57 @@ async def get_watchlist(current_user: User = Depends(get_current_user)):
 
 
 @router.get("/prices")
-async def get_prices(current_user: User = Depends(get_current_user)):
-    """Latest cached prices for the full watchlist (NSE)."""
+async def get_prices(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Latest cached NSE prices and today's or last-session change."""
     tickers = settings.WATCHLIST_TICKERS
     prices = await get_cached_prices(tickers)
+    local_now = datetime.now(NSE_TIMEZONE)
+    ranked_bars = (
+        select(
+            OHLCVBar.ticker.label("ticker"),
+            OHLCVBar.timestamp.label("timestamp"),
+            OHLCVBar.close.label("close"),
+            func.row_number().over(
+                partition_by=OHLCVBar.ticker,
+                order_by=OHLCVBar.timestamp.desc(),
+            ).label("rank"),
+        )
+        .where(
+            OHLCVBar.ticker.in_(tickers),
+            OHLCVBar.interval == BarInterval.ONE_DAY,
+        )
+        .subquery()
+    )
+    result = await db.execute(
+        select(ranked_bars.c.ticker, ranked_bars.c.timestamp, ranked_bars.c.close)
+        .where(ranked_bars.c.rank <= 2)
+        .order_by(ranked_bars.c.ticker, ranked_bars.c.timestamp.desc())
+    )
+    daily_bars: dict[str, list[tuple[datetime, float]]] = {}
+    for ticker, timestamp, close in result.all():
+        daily_bars.setdefault(ticker, []).append((timestamp, float(close)))
+    changes = {
+        ticker: daily_change_pct(
+            float(price) if price is not None else None,
+            daily_bars.get(ticker, []),
+        )
+        for ticker, price in prices.items()
+    }
     return {
         "tickers": tickers,
         "prices": {
             t: (str(p) if p is not None else None) for t, p in prices.items()
         },
+        "changes": changes,
+        "change_period": (
+            "TODAY"
+            if local_now.weekday() < 5
+            and day_time(9, 15) <= local_now.time() < day_time(15, 30)
+            else "LAST SESSION"
+        ),
     }
 
 

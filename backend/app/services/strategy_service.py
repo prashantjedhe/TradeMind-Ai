@@ -9,9 +9,9 @@ nodes (see app/schemas/strategy.py). This module owns:
 2. Evaluation: evaluate_condition_tree() walks that tree against a
    pandas OHLCV DataFrame and returns True/False for the LATEST bar
    (plus edge-trigger info for crosses operators).
-3. Action firing: when the root condition is True and the Celery
-   evaluator decides to act, fire_action() places the paper order
-   through order_service with triggered_by=STRATEGY.
+3. Proposal generation: when a root condition is satisfied,
+   fire_action() creates an expiring paper-order proposal. Only the
+   user confirmation endpoint submits that order.
 
 Evaluation semantics:
 - Leaves compare an indicator (or raw price/volume) on the latest
@@ -30,13 +30,17 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.order import OrderSide, SettlementType, TriggeredBy
+from app.config import settings
+from app.api.deps import redis_client
+from app.models.order import OrderSide, SettlementType
+from app.models.news import NewsSignal
 from app.models.ohlcv import BarInterval
 from app.models.strategy import (
     Strategy,
@@ -46,13 +50,11 @@ from app.models.strategy import (
 )
 from app.models.user import User
 from app.schemas.strategy import ActionSchema, StrategyCreate, StrategyUpdate, STRATEGY_PROMPT_LIBRARY
-from app.schemas.order import OrderCreateRequest
-from app.services.order_service import create_order as create_order_service
+from app.services.price_cache_service import get_price_or_derive
 from app.services.fn_o_service import underlying_of
-from app.services.news_signal_service import (
-    load_sentiment_series,
-    top_headlines,
-)
+from app.services.news_signal_service import load_sentiment_series, top_headlines
+from app.services.trade_proposal_service import create_trade_proposal
+from app.services.advisor_market_context import build_market_snapshot
 from app.utils.indicators import compute_indicator, min_bars_required
 
 logger = logging.getLogger(__name__)
@@ -216,6 +218,7 @@ async def set_strategy_status(
         # user takes responsibility. (Engine resume clears these too.)
         strategy.paused_reason = None
         strategy.news_event_id = None
+        await redis_client.set(f"strategy_state:{strategy.id}", "0")
     await db.commit()
     await db.refresh(strategy)
     return strategy
@@ -484,26 +487,61 @@ async def _load_df(db: AsyncSession, ticker: str, interval: BarInterval, limit: 
     return await load_bars_dataframe(db, ticker, interval, limit=limit)
 
 
+async def opposing_strategy_context(db: AsyncSession, strategy: Strategy) -> str | None:
+    """Return a reason to stop an active strategy when confirmed context opposes it."""
+    ticker = underlying_of(strategy.ticker)
+    expected = "bullish" if strategy.action_side == OrderSide.BUY else "bearish"
+    now = datetime.now(timezone.utc)
+
+    try:
+        bars = await _load_df(db, ticker, BarInterval.ONE_DAY, 100)
+        if not bars.empty:
+            last_bar = pd.Timestamp(bars.index[-1])
+            if last_bar.tzinfo is None:
+                last_bar = last_bar.tz_localize(timezone.utc)
+            if (now - last_bar.to_pydatetime()).total_seconds() <= 7 * 24 * 3600:
+                trend = build_market_snapshot(ticker, None, bars)["daily_trend"]
+                if trend in ("bullish", "bearish") and trend != expected:
+                    return f"MARKET: daily {trend} trend opposes {strategy.action_side.value} strategy"
+    except Exception as exc:
+        logger.warning("Strategy %s market guard unavailable: %s", strategy.id, exc)
+
+    try:
+        signal = (await db.execute(
+            select(NewsSignal)
+            .where(
+                NewsSignal.ticker == ticker,
+                NewsSignal.window_minutes == 60,
+                NewsSignal.timestamp <= now,
+                NewsSignal.timestamp >= now - timedelta(
+                    seconds=settings.NEWS_SIGNAL_TTL_SECONDS
+                ),
+                NewsSignal.article_count >= settings.NEWS_MIN_ARTICLES,
+                NewsSignal.band.in_(("MEDIUM", "HIGH")),
+            )
+            .order_by(NewsSignal.timestamp.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        if signal is not None:
+            impact = float(signal.impact)
+            if abs(impact) >= settings.NEWS_MED_THRESHOLD:
+                news_direction = "bullish" if impact > 0 else "bearish"
+                if news_direction != expected:
+                    return (
+                        f"NEWS: corroborated {news_direction} impact "
+                        f"({impact:+.2f}) opposes {strategy.action_side.value} strategy"
+                    )
+    except Exception as exc:
+        logger.warning("Strategy %s news guard unavailable: %s", strategy.id, exc)
+    return None
+
+
 async def fire_action(db: AsyncSession, strategy: Strategy) -> bool:
     """
-    Place the strategy's action as a paper order (MARKET executes
-    immediately; LIMIT sits as PENDING for the Phase 2 trigger engine).
-    Returns True on success, False if no fresh price is available.
-
-    Pure-news trees fire with triggered_by=NEWS_EVENT (the enum value
-    reserved for this phase) and carry the top evidence headlines in
-    the order's updated_reason for audit.
+    Convert a triggered strategy into an expiring paper-trade proposal.
+    No strategy evaluator path submits an order without user confirmation.
     """
-    user_result = await db.execute(select(User).where(User.id == strategy.user_id))
-    user = user_result.scalar_one_or_none()
-    if user is None:
-        logger.error("Strategy %s has no owner user", strategy.id)
-        return False
-
-    is_news = _tree_uses_sentiment(strategy.root_condition)
-
-    # News lot-size state: actual = max(1, floor(base x multiplier)).
-    # Restored to 1.0 by the action engine after its timeout.
+    # News risk controls may reduce the proposed size before it is shown.
     try:
         mult = float(strategy.quantity_multiplier or 1.0)
     except (TypeError, ValueError):
@@ -514,38 +552,50 @@ async def fire_action(db: AsyncSession, strategy: Strategy) -> bool:
         logger.info("Strategy %s lot-size: %s x %.4f -> %s",
                     strategy.id, strategy.action_quantity, mult, eff_qty)
 
-    request = OrderCreateRequest(
-        ticker=strategy.ticker,
-        order_type=strategy.action_order_type.value,
-        side=strategy.action_side.value,
-        settlement_type=strategy.action_settlement_type.value,
-        quantity=eff_qty,
-        limit_price=strategy.action_limit_price,
-    )
-
-    try:
-        order = await create_order_service(
-            db=db, user=user, request=request,
-            triggered_by=TriggeredBy.NEWS_EVENT if is_news else TriggeredBy.STRATEGY)
-    except Exception as exc:
-        logger.warning("Strategy %s auto-order failed: %s", strategy.id, exc)
+    ticker = strategy.ticker.strip().upper()
+    quote = await get_price_or_derive(ticker)
+    if quote is None or not quote.is_finite() or quote <= 0:
+        logger.warning("Strategy %s setup has no fresh executable quote", strategy.id)
         return False
 
-    if is_news:
-        try:
-            heads = await top_headlines(db, underlying_of(strategy.ticker), 60, limit=2)
-            bits = "; ".join(h["title"][:80] for h in heads)
-            order.updated_reason = f"NEWS sentiment trigger | {bits}"[:255]
-        except Exception as exc:
-            logger.warning("Strategy %s evidence attach failed: %s", strategy.id, exc)
+    limit_price = strategy.action_limit_price
+    if strategy.action_order_type.value == "MARKET" or limit_price is None:
+        limit_price = quote
 
+    minute_key = datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat()
+    evidence = {
+        "strategy_name": strategy.name,
+        "timeframe": strategy.timeframe.value,
+        "condition": strategy.root_condition,
+        "suggested_order_type": strategy.action_order_type.value,
+        "reference_quote": str(quote),
+    }
+    if _tree_uses_sentiment(strategy.root_condition):
+        try:
+            evidence["headlines"] = await top_headlines(
+                db, underlying_of(ticker), 60, limit=3
+            )
+        except Exception as exc:
+            logger.warning("Strategy %s proposal evidence unavailable: %s", strategy.id, exc)
+
+    proposal = await create_trade_proposal(
+        db,
+        proposal_key=f"strategy:{strategy.id}:{minute_key}",
+        user_id=strategy.user_id,
+        strategy_id=strategy.id,
+        ticker=ticker,
+        side=strategy.action_side.value,
+        quantity=eff_qty,
+        settlement_type=strategy.action_settlement_type.value,
+        limit_price=Decimal(str(limit_price)).quantize(Decimal("0.01")),
+        rationale=f"{strategy.name} conditions are currently satisfied.",
+        evidence=evidence,
+    )
     strategy.last_triggered_at = datetime.now(timezone.utc)
     await db.commit()
 
     logger.info(
-        "Strategy %s fired: %s %s %s x%s (order %s via %s)",
-        strategy.id, strategy.action_side.value, strategy.action_order_type.value,
-        strategy.ticker, strategy.action_quantity, order.id,
-        "NEWS_EVENT" if is_news else "STRATEGY",
+        "Strategy %s setup proposed: %s LIMIT %s x%s (proposal %s)",
+        strategy.id, strategy.action_side.value, ticker, eff_qty, proposal.id,
     )
     return True

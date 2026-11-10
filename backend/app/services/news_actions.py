@@ -1,11 +1,11 @@
 """
-News Action Engine: turns ticker impact bands into guarded trade actions.
+News Action Engine: turns ticker impact bands into guarded risk signals.
 
 Band semantics (impact = signed; gates use |impact|, direction uses sign):
 - HIGH   (|impact| >= NEWS_HIGH_THRESHOLD): pause ticker strategies,
-  tighten stop-losses, shrink next-order lot size. Exits stay MANUAL.
+  pause opposing strategies and shrink proposed lot size. Any exit needs user approval.
 - MEDIUM (|impact| >= NEWS_MED_THRESHOLD): in-app alert + smaller lot
-  reduction. Strategies keep running, SL untouched.
+  reduction. Strategies keep running.
 - LOW: log only (the news feed itself).
 
 Safety rails (the parts the naive spec missed):
@@ -17,7 +17,7 @@ Safety rails (the parts the naive spec missed):
 - Resume: news-paused strategies (paused_reason LIKE 'NEWS:%') resume
   after NEWS_RESUME_CALM_CYCLES calm cycles OR the 120-minute timeout,
   whichever first; lot multipliers restore on the same timeout.
-- Tighten-only: SL triggers move closer to LTP, never further away.
+- News does not create or modify orders without user confirmation.
 - All money movement reuses order_service.create_order (slippage +
   fee_calculator + row-locked balance/position) -- no parallel math.
 """
@@ -45,7 +45,6 @@ from app.services.news_impact import (
     classify_band,
 )
 from app.services.order_service import create_order as create_order_service
-from app.services.price_cache_service import get_price_or_derive
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +166,10 @@ async def _pause_strategy(db: AsyncSession, strategy: Strategy,
     headline = ((evidence or {}).get("title") or "high-impact news")[:200]
     strategy.status = StrategyStatus.PAUSED
     strategy.paused_reason = f"NEWS: {headline}"[:255]
+    try:
+        await redis_client.set(f"strategy_state:{strategy.id}", "0")
+    except Exception as exc:
+        logger.warning("Could not reset strategy edge state for %s: %s", strategy.id, exc)
     if evidence and evidence.get("article_id"):
         try:
             import uuid as _uuid
@@ -176,70 +179,6 @@ async def _pause_strategy(db: AsyncSession, strategy: Strategy,
     logger.info("News pause: strategy %s (%s) on HIGH impact",
                 strategy.id, strategy.ticker)
     return True
-
-
-async def _tighten_stop(db: AsyncSession, user: User, ticker: str,
-                        impact: float) -> dict:
-    """
-    HIGH action 3: move PENDING SL triggers closer to LTP (never away),
-    or create one at base_distance x factor when the long has no SL.
-    factor = 1 - |impact| x 0.5  (0.70 impact -> 0.65x distance).
-    Returns a summary dict for logging/API.
-    """
-    key = f"{ACTION_KEY_PREFIX}{user.id}:{ticker}:sl"
-    if not await _cooldown_acquire(key, _cooldown_s("sl")):
-        return {"tightened": 0, "created": 0, "skipped": "cooldown"}
-
-    ltp = await get_price_or_derive(ticker)
-    if ltp is None:
-        return {"tightened": 0, "created": 0, "skipped": "no-price"}
-    ltp_f = float(ltp)
-    factor = 1.0 - abs(float(impact)) * 0.5
-
-    pos = (await db.execute(
-        select(Position).where(Position.user_id == user.id,
-                               Position.ticker == ticker,
-                               Position.status == PositionStatus.OPEN)
-    )).scalar_one_or_none()
-    if pos is None or int(pos.quantity or 0) == 0:
-        return {"tightened": 0, "created": 0, "skipped": "no-position"}
-    is_long = int(pos.quantity) > 0
-
-    sl_side = OrderSide.SELL if is_long else OrderSide.BUY
-    sl_orders = (await db.execute(
-        select(Order).where(Order.user_id == user.id, Order.ticker == ticker,
-                            Order.order_type == OrderType.SL,
-                            Order.side == sl_side,
-                            Order.status == OrderStatus.PENDING)
-    )).scalars().all()
-
-    tightened = created = 0
-    if sl_orders:
-        for o in sl_orders:
-            old = float(o.trigger_price)
-            dist = abs(ltp_f - old)
-            if dist <= 0:
-                continue
-            new_trigger = (ltp_f - dist * factor) if is_long else (ltp_f + dist * factor)
-            # Tighten-only guard: new trigger must be closer to LTP.
-            if (is_long and new_trigger > old) or (not is_long and new_trigger < old):
-                o.trigger_price = round(new_trigger, 2)
-                o.updated_reason = "AUTO_TIGHTEN_NEWS"
-                tightened += 1
-    else:
-        base = ltp_f * settings.NEWS_DEFAULT_SL_PCT
-        new_trigger = (ltp_f - base * factor) if is_long else (ltp_f + base * factor)
-        req = OrderCreateRequest(
-            ticker=ticker, order_type=OrderType.SL, side=sl_side,
-            settlement_type=await _entry_settlement(db, user.id, ticker),
-            quantity=abs(int(pos.quantity)), limit_price=round(new_trigger, 2),
-        )
-        order = await create_order_service(db=db, user=user, request=req,
-                                           triggered_by=TriggeredBy.NEWS_EVENT)
-        order.updated_reason = "AUTO_TIGHTEN_NEWS"
-        created = 1
-    await db.commit()
-    return {"tightened": tightened, "created": created, "factor": round(factor, 4)}
 
 
 async def _reduce_multiplier(db: AsyncSession, strategy: Strategy,
@@ -354,17 +293,15 @@ async def evaluate_news_actions(db: AsyncSession) -> dict:
 
         if band == "HIGH":
             for s in strategies:
-                if await _pause_strategy(db, s, agg["evidence"]):
+                is_opposed = (
+                    (impact < 0 and s.action_side == OrderSide.BUY)
+                    or (impact > 0 and s.action_side == OrderSide.SELL)
+                )
+                if is_opposed and await _pause_strategy(db, s, agg["evidence"]):
                     summary["paused"] += 1
                 await _reduce_multiplier(db, s, impact, high=True)
-            # Tighten per user (positions/SL are per-user, not per-strategy).
-            for uid in user_ids:
-                user = (await db.execute(
-                    select(User).where(User.id == uid))).scalar_one_or_none()
-                if user is None:
-                    continue
-                res = await _tighten_stop(db, user, ticker, impact)
-                summary["sl"].append({"ticker": ticker, **res})
+            # News may pause opposing strategies and show a user-confirmed
+            # exit proposal; it must not create or modify orders itself.
             await db.commit()
         elif band == "MEDIUM":
             for s in strategies:
@@ -386,11 +323,15 @@ async def evaluate_news_actions(db: AsyncSession) -> dict:
     return summary
 
 
-async def exit_position_on_news(db: AsyncSession, user: User, ticker: str) -> Order:
+async def _exit_open_position(
+    db: AsyncSession,
+    user: User,
+    ticker: str,
+    triggered_by: TriggeredBy,
+    updated_reason: str,
+) -> Order:
     """
-    USER-triggered only (UI "Exit on news" button): MARKET order for the
-    full open quantity, opposite side, via the standard fill path.
-    Never called by the engine itself.
+    Create a full-quantity MARKET exit through the standard fill path.
     """
     from app.services.order_service import (
         InsufficientBalanceError,
@@ -412,8 +353,22 @@ async def exit_position_on_news(db: AsyncSession, user: User, ticker: str) -> Or
         quantity=qty,
     )
     order = await create_order_service(db=db, user=user, request=req,
-                                       triggered_by=TriggeredBy.NEWS_EVENT)
-    order.updated_reason = "USER_EXIT_NEWS"
+                                       triggered_by=triggered_by)
+    order.updated_reason = updated_reason
     await db.commit()
     await db.refresh(order)
     return order
+
+
+async def exit_position_on_news(db: AsyncSession, user: User, ticker: str) -> Order:
+    """User-triggered full MARKET exit recorded as a news-event action."""
+    return await _exit_open_position(
+        db, user, ticker, TriggeredBy.NEWS_EVENT, "USER_EXIT_NEWS"
+    )
+
+
+async def exit_position_manually(db: AsyncSession, user: User, ticker: str) -> Order:
+    """User-triggered full MARKET exit recorded as a manual action."""
+    return await _exit_open_position(
+        db, user, ticker, TriggeredBy.USER, "USER_MANUAL_EXIT"
+    )

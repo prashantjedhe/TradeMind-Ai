@@ -1,8 +1,8 @@
 from __future__ import annotations
 import uuid
 from datetime import datetime
-from typing import Optional
-from pydantic import BaseModel, Field
+from typing import Optional, Any
+from pydantic import BaseModel, ConfigDict, Field
 from decimal import Decimal
 from app.models.backtest_copy_league import BacktestStatus, LeagueCompetition, BadgeType
 from app.schemas.strategy import ActionSchema, ConditionNode
@@ -15,6 +15,7 @@ class BacktestResultOut(BaseModel):
     start_date: datetime
     end_date: datetime
     status: BacktestStatus
+    error_message: Optional[str] = None
     cagr: float
     sharpe: float
     max_drawdown: float
@@ -31,8 +32,7 @@ class BacktestResultOut(BaseModel):
     equity_curve: Optional[dict] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class BacktestRequest(BaseModel):
@@ -56,8 +56,7 @@ class LeagueOut(BaseModel):
     ranking_metric: str
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LeagueEntryOut(BaseModel):
@@ -74,8 +73,24 @@ class LeagueEntryOut(BaseModel):
     final_rank: Optional[int] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MyLeagueEntryOut(BaseModel):
+    """League entry with league name for 'My Leagues' view."""
+    id: str
+    league_id: str
+    league_name: str
+    league_status: str
+    joined_at: str
+    final_rank: Optional[int] = None
+    final_sharpe: float
+    final_return_pct: float
+    final_drawdown: float
+    final_trades: int
+    final_win_rate: float
+    final_pnl: float
+    created_at: str
 
 
 class BadgeOut(BaseModel):
@@ -86,13 +101,13 @@ class BadgeOut(BaseModel):
     description: str
     awarded_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LeaderboardEntry(BaseModel):
     rank: int
     user_id: str
+    username: str
     sharpe: float
     return_pct: float
     drawdown: float
@@ -103,10 +118,10 @@ class LeaderboardEntry(BaseModel):
 
 
 class CreateLeagueRequest(BaseModel):
-    name: str
-    description: Optional[str] = None
-    initial_balance: float = 1000000
-    duration_days: int = 30
+    name: str = Field(min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=500)
+    initial_balance: float = Field(default=1000000, gt=0)
+    duration_days: int = Field(default=30, ge=1, le=365)
 
 
 class JoinLeagueResponse(BaseModel):

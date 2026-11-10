@@ -108,7 +108,7 @@ class League(Base):
     end_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     initial_balance: Mapped[float] = mapped_column(Numeric(14, 4), nullable=False, default=1000000)
     status: Mapped[LeagueCompetition] = mapped_column(
-        SQLEnum(LeagueCompetition), nullable=False, default=LeagueCompetition.ACTIVE, index=True
+        SQLEnum(LeagueCompetition), nullable=False, default=LeagueCompetition.ACTIVE
     )
     ranking_metric: Mapped[str] = mapped_column(String(20), nullable=False, default="sharpe")
 
@@ -197,7 +197,13 @@ class Badge(Base):
     user = relationship("User", back_populates="badges")
 
     __table_args__ = (
-        Index("ix_badge_league_user", "league_id", "user_id", unique=True),
+        Index(
+            "ix_badge_league_user_type",
+            "league_id",
+            "user_id",
+            "badge_type",
+            unique=True,
+        ),
     )
 
     def __repr__(self) -> str:

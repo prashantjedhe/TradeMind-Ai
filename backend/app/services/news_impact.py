@@ -1,28 +1,8 @@
-"""
-News impact scoring (corrected, realistic formula).
+"""Signed, confidence-aware per-article impact scoring.
 
-Spec correction applied: the original multiplicative chain
-(polarity x sector x source x recency, all <= 1) compressed every
-real story into MEDIUM/LOW -- only a perfect Reuters+BANK+fresh+
-0.95-confidence story could reach HIGH. The engine's headline
-actions would have been dead code.
-
-Corrected formula (weighted blend -- one weak factor can no longer
-veto three strong ones):
-
-    impact = polarity x (W_SECTOR*sector_w + W_SOURCE*source_w
-                         + W_RECENCY*recency)
-
-    polarity : SIGNED. FinBERT -> +conf (POS) / -conf (NEG) /
-               P(pos)-P(neg) (NEU). Lexicon -> signed score.
-    sector_w : NEWS_SECTOR_WEIGHTS (priors v1, quarterly refit).
-    source_w : NEWS_SOURCE_WEIGHTS substring match, else default 0.50.
-    recency  : max(FLOOR, 1 - age_minutes / HALF_LIFE_MIN).
-
-Bands use |impact| for gating (pause/tighten) and sign(impact) for
-direction. Thresholds are env-tunable defaults; the signals log
-carries every impact so HIGH/MEDIUM can be recalibrated by
-percentile (HIGH ~= 95th pct of |impact|).
+Sentiment is the signed expected polarity. Sector relevance, publisher
+credibility, and recency attenuate that polarity; they must not inflate
+it. Bands use absolute impact for severity and its sign for direction.
 """
 
 from __future__ import annotations
@@ -38,10 +18,10 @@ logger = logging.getLogger(__name__)
 def source_weight(source: str) -> float:
     """Credibility prior, matched case-insensitively on the publisher tail."""
     text = (source or "").lower()
-    # Publisher is the tail segment ("google-news-rss:en:Economic Times").
-    tail = text.split(":")[-1]
+    tail = "".join(char for char in text.split(":")[-1] if char.isalnum())
     for key, weight in settings.NEWS_SOURCE_WEIGHTS.items():
-        if key.lower() in tail or key.lower() in text:
+        normalized_key = "".join(char for char in key.lower() if char.isalnum())
+        if normalized_key and normalized_key in tail:
             return float(weight)
     return float(settings.NEWS_SOURCE_DEFAULT_WEIGHT)
 
@@ -77,19 +57,35 @@ def article_impact(polarity: float, sector: str, source: str,
     sec_w = sector_weight(sector)
     src_w = source_weight(source)
     rec = recency_factor(age_minutes)
-    blend = (settings.NEWS_W_SECTOR * sec_w
-             + settings.NEWS_W_SOURCE * src_w
-             + settings.NEWS_W_RECENCY * rec)
-    impact = pol * blend
+    impact = pol * sec_w * src_w * rec
     return {
         "impact": round(impact, 5),
         "polarity": round(pol, 4),
         "sector_weight": round(sec_w, 4),
         "source_weight": round(src_w, 4),
         "recency_factor": round(rec, 4),
-        "blend": round(blend, 4),
+        "blend": round(sec_w * src_w * rec, 4),
         "band": classify_band(impact),
     }
+
+
+def explain_article_impact(
+    polarity: float,
+    sector: str,
+    source: str,
+    age_minutes: float,
+    sentiment_label: str,
+) -> dict:
+    """Return the impact factors and a user-readable heuristic rationale."""
+    result = article_impact(polarity, sector, source, age_minutes)
+    result["rationale"] = (
+        f"{sentiment_label} sentiment ({result['polarity']:+.2f}) attenuated by "
+        f"{sector or 'UNKNOWN'} sector relevance ({result['sector_weight']:.2f}), "
+        f"publisher prior ({result['source_weight']:.2f}), and freshness "
+        f"({result['recency_factor']:.2f}) gives heuristic impact "
+        f"{result['impact']:+.3f}. This is not a price prediction."
+    )
+    return result
 
 
 def classify_band(impact: float) -> str:

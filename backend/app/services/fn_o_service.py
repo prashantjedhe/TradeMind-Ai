@@ -56,7 +56,6 @@ CONTRACT_SPECS: dict[str, dict] = {
     "INFY": {"lot": 800, "multiplier": 800, "step": 5},
     "WIPRO": {"lot": 3000, "multiplier": 3000, "step": 5},
     "HCLTECH": {"lot": 2500, "multiplier": 2500, "step": 5},
-    "RELIANCE": {"lot": 250, "multiplier": 250, "step": 5},
     "MARUTI": {"lot": 100, "multiplier": 100, "step": 20},
     "HINDUNILVR": {"lot": 500, "multiplier": 500, "step": 10},
     "ITC": {"lot": 3200, "multiplier": 3200, "step": 5},
@@ -180,7 +179,10 @@ def is_fno_symbol(symbol: str) -> bool:
 def underlying_of(symbol: str) -> str:
     """Resolve the equity underlying of any ticker (F&O or plain equity)."""
     inst = parse_instrument(symbol)
-    return inst.underlying if inst else symbol.strip().upper()
+    if inst:
+        return inst.underlying
+    ticker = symbol.strip().upper()
+    return ticker[:-3] if ticker.endswith(".NS") else ticker
 
 
 def expiry_date(expiry: str, reference: date | None = None) -> date:

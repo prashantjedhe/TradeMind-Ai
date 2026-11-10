@@ -10,7 +10,7 @@ Routing (the realistic correction for FinBERT being English-only):
 Output contract (both paths): score in [-1, +1] (SIGNED polarity),
 magnitude/confidence in [0, 1], label POS/NEG/NEU, evidence spans,
 detected language, model id. The impact engine consumes `polarity`
-(= score) and `confidence` (= magnitude for lexicon).
+(= score) and keeps confidence separate from direction.
 
 Lexicon coverage:
 - English finance terms (rally/surge/beat/upgrade vs plunge/miss/
@@ -29,8 +29,8 @@ import re
 import threading
 import time
 
-MODEL_VERSION = "lexicon-bilingual-v1"
-FINBERT_MODEL_VERSION = "finbert-ProsusAI-v1"
+MODEL_VERSION = "lexicon-bilingual-v2"
+FINBERT_MODEL_VERSION = "finbert-ProsusAI-v2"
 
 logger = logging.getLogger(__name__)
 
@@ -91,12 +91,24 @@ def reset_finbert_budget() -> None:
     _FINBERT_SPENT_S = 0.0
 
 
+def _sentiment_from_probabilities(probabilities: dict[str, float]) -> dict:
+    p_pos = probabilities.get("positive", 0.0)
+    p_neg = probabilities.get("negative", 0.0)
+    p_neu = probabilities.get("neutral", 0.0)
+    polarity = max(-1.0, min(1.0, p_pos - p_neg))
+    label = "POS" if polarity > 0.15 else ("NEG" if polarity < -0.15 else "NEU")
+    confidence = max(p_pos, p_neg, p_neu)
+    return {"score": round(polarity, 4), "magnitude": round(confidence, 4),
+            "polarity": round(polarity, 4), "confidence": round(confidence, 4),
+            "label": label}
+
+
 def score_text_finbert(text: str) -> dict:
     """
-    FinBERT inference, English only. polarity is SIGNED:
-    +confidence for positive, -confidence for negative,
-    P(positive) - P(negative) for neutral. Raises on any failure so
-    callers fall back to the lexicon.
+    FinBERT inference, English only. The score is expected polarity:
+    P(positive) - P(negative), rather than the winning class probability.
+    The winning probability is retained separately as confidence.
+    Raises on any failure so callers fall back to the lexicon.
     """
     import torch
 
@@ -120,26 +132,8 @@ def score_text_finbert(text: str) -> dict:
 
     id2label = {int(k): str(v).lower() for k, v in model.config.id2label.items()}
     p = {id2label.get(i, f"label_{i}"): float(probs[i]) for i in range(len(probs))}
-    p_pos = p.get("positive", 0.0)
-    p_neg = p.get("negative", 0.0)
-    p_neu = p.get("neutral", 0.0)
-
-    best = max(("positive", p_pos), ("negative", p_neg), ("neutral", p_neu),
-               key=lambda kv: kv[1])
-    if best[0] == "positive":
-        polarity, label = best[1], "POS"
-    elif best[0] == "negative":
-        polarity, label = -best[1], "NEG"
-    else:
-        polarity, label = p_pos - p_neg, "NEU"
-        if abs(polarity) < 0.05:
-            polarity = 0.0
-    confidence = max(p_pos, p_neg, p_neu)
-    return {"score": round(max(-1.0, min(1.0, polarity)), 4),
-            "magnitude": round(confidence, 4),
-            "polarity": round(max(-1.0, min(1.0, polarity)), 4),
-            "confidence": round(confidence, 4),
-            "label": label, "spans": [], "language": "en",
+    return {**_sentiment_from_probabilities(p),
+            "spans": [], "language": "en",
             "model": FINBERT_MODEL_VERSION}
 
 _TOKEN_RE = re.compile(r"[\w\u0900-\u097F']+", re.UNICODE)
@@ -235,7 +229,7 @@ def score_text(text: str) -> dict:
               **TRANSLIT_POSITIVE, **TRANSLIT_NEGATIVE}
 
     def apply(weight: float, evidence: str) -> None:
-        nonlocal total, abs_total, negate_left, boost_next
+        nonlocal total, abs_total, boost_next
         if negate_left > 0:
             weight = -weight
         if boost_next:
@@ -266,7 +260,7 @@ def score_text(text: str) -> dict:
         return {"score": 0.0, "magnitude": 0.0, "label": "NEU",
                 "spans": [], "language": language}
 
-    score = max(-1.0, min(1.0, (total / (abs_total + 3.0)) * 3.0))
+    score = max(-1.0, min(1.0, total / (abs_total + 3.0)))
     magnitude = min(1.0, abs_total / 6.0)
     label = "POS" if score > 0.15 else ("NEG" if score < -0.15 else "NEU")
     return {"score": round(score, 4), "magnitude": round(magnitude, 4),
@@ -299,7 +293,6 @@ def score_article_hybrid(title: str, body: str = "", budget_s: float = 120.0) ->
     text = f"{title or ''} {body or ''}".strip()
     lang = detect_language(text)
     if lang == "en":
-        global _FINBERT_SPENT_S
         try:
             if _FINBERT_SPENT_S < budget_s:
                 out = score_text_finbert(f"{title or ''}. {body or ''}".strip() or title)

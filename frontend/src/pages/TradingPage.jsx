@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { createOrder, getPortfolioSummary, getOrders } from '../api/orderApi'
+import { createOrder, getPortfolioSummary, getOrders, manualExit } from '../api/orderApi'
 import { exitOnNews } from '../api/newsApi'
 import { getWatchlist } from '../api/marketApi'
 import PageLayout from '../components/common/PageLayout'
@@ -125,23 +125,25 @@ function TradingPage() {
   const pendingOrders = orders.filter((o) => o.status === 'PENDING')
   const filledOrders = orders.filter((o) => o.status !== 'PENDING')
 
-  const [exitingTicker, setExitingTicker] = useState(null)
+  const [exitingPosition, setExitingPosition] = useState(null)
 
-  // USER-triggered only: one-tap full exit at market on breaking news.
-  // The engine itself never calls this endpoint.
-  const handleExitOnNews = async (positionTicker) => {
-    if (!window.confirm(`Exit full ${positionTicker} position at MARKET on news?`)) return
-    setExitingTicker(positionTicker)
+  const handlePositionExit = async (positionTicker, exitType) => {
+    const isNewsExit = exitType === 'news'
+    const description = isNewsExit ? 'at MARKET on news' : 'manually at MARKET'
+    if (!window.confirm(`Exit full ${positionTicker} position ${description}?`)) return
+    setExitingPosition({ ticker: positionTicker, type: exitType })
     setResult(null)
     setError(null)
     try {
-      const { data } = await exitOnNews(positionTicker)
+      const { data } = isNewsExit
+        ? await exitOnNews(positionTicker)
+        : await manualExit(positionTicker)
       setResult(data)
       await loadData()
     } catch (err) {
-      setError(err.response?.data?.detail || 'Exit on news failed. Please try again.')
+      setError(err.response?.data?.detail || 'Position exit failed. Please try again.')
     } finally {
-      setExitingTicker(null)
+      setExitingPosition(null)
     }
   }
 
@@ -385,7 +387,7 @@ function TradingPage() {
                       <th>Avg Entry</th>
                       <th>Current</th>
                       <th>Unrealised P&amp;L</th>
-                      <th>News Exit</th>
+                      <th>Exit Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -399,15 +401,30 @@ function TradingPage() {
                           {p.unrealised_pnl ? `₹${p.unrealised_pnl}` : '—'}
                         </td>
                         <td>
-                          <button
-                            type="button"
-                            disabled={exitingTicker === p.ticker}
-                            onClick={() => handleExitOnNews(p.ticker)}
-                            title="Manual full exit at market on breaking news (tagged NEWS_EVENT)"
-                            className="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-[11px] font-semibold text-rose-400 transition hover:bg-rose-500/20 disabled:opacity-50"
-                          >
-                            {exitingTicker === p.ticker ? 'Exiting…' : '⚡ Exit on news'}
-                          </button>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              disabled={exitingPosition?.ticker === p.ticker}
+                              onClick={() => handlePositionExit(p.ticker, 'manual')}
+                              title="Close the full position immediately at market"
+                              className="rounded-lg border border-rose-500/30 bg-rose-500/15 px-3 py-1.5 text-[11px] font-semibold text-rose-300 transition hover:bg-rose-500/25 disabled:opacity-50"
+                            >
+                              {exitingPosition?.ticker === p.ticker && exitingPosition.type === 'manual'
+                                ? 'Exiting…'
+                                : 'Exit manually'}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={exitingPosition?.ticker === p.ticker}
+                              onClick={() => handlePositionExit(p.ticker, 'news')}
+                              title="Close the full position at market and tag it as a news exit"
+                              className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-1.5 text-[11px] font-semibold text-amber-300 transition hover:bg-amber-500/20 disabled:opacity-50"
+                            >
+                              {exitingPosition?.ticker === p.ticker && exitingPosition.type === 'news'
+                                ? 'Exiting…'
+                                : '⚡ Exit on news'}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}

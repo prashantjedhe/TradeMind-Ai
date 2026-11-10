@@ -16,10 +16,12 @@ Design notes:
   (36 calls), and Yahoo Finance rate-limits aggressive request
   patterns (a real constraint solved earlier in this project for
   live price fetching too).
+- League auto-finalization runs daily at midnight IST to close any
+  leagues whose end_date has passed and compute final rankings/badges.
 """
 
 from celery import Celery
-from celery.schedules import schedule
+from celery.schedules import schedule, crontab
 
 from app.config import settings
 
@@ -33,6 +35,8 @@ celery_app = Celery(
         "app.workers.ohlcv_sync",
         "app.workers.strategy_evaluator",
         "app.workers.news_ingest",
+        "app.workers.news_outcomes",
+        "app.workers.league_reset",
     ],
 )
 
@@ -64,5 +68,13 @@ celery_app.conf.beat_schedule = {
     "ingest-news": {
         "task": "app.workers.news_ingest.ingest_news",
         "schedule": schedule(run_every=300.0),  # every 5 minutes (free RSS)
+    },
+    "evaluate-news-outcomes": {
+        "task": "app.workers.news_outcomes.evaluate_news_outcomes",
+        "schedule": schedule(run_every=900.0),  # after recent OHLCV syncs
+    },
+    "auto-finalize-leagues": {
+        "task": "app.workers.league_reset.auto_finalize_leagues",
+        "schedule": crontab(hour=0, minute=0),  # daily at midnight IST
     },
 }

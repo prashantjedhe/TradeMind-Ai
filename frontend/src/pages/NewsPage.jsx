@@ -4,6 +4,7 @@ import { getWatchlist } from '../api/marketApi'
 import {
   getLatestNews,
   getNewsAlerts,
+  getNewsEvaluation,
   getNewsSignal,
   postAdvisor,
 } from '../api/newsApi'
@@ -25,6 +26,16 @@ const BAND_TONE = {
   MEDIUM: 'chip-gold',
   LOW: 'chip-neutral',
 }
+
+const POPULAR_TICKERS = [
+  { symbol: 'NIFTY', label: 'NIFTY 50' },
+  { symbol: 'BANKNIFTY', label: 'BANK NIFTY' },
+  { symbol: 'HDFCBANK', label: 'HDFC BANK' },
+  { symbol: 'RELIANCE', label: 'RELIANCE' },
+  { symbol: 'TCS', label: 'TCS' },
+  { symbol: 'TATASTEEL', label: 'TATA STEEL' },
+  { symbol: 'TMPV', label: 'TATA MOTORS' },
+]
 
 function ScoreChip({ score }) {
   const n = Number(score)
@@ -49,12 +60,14 @@ function ImpactChip({ impact, band }) {
 function NewsPage() {
   const navigate = useNavigate()
   const [watchlist, setWatchlist] = useState([])
-  const [ticker, setTicker] = useState('')
-  const [tickerSearch, setTickerSearch] = useState('')
+  const [ticker, setTicker] = useState('ALL')
   const [signal, setSignal] = useState(null)
   const [alerts, setAlerts] = useState([])
   const [articles, setArticles] = useState([])
   const [selectedArticle, setSelectedArticle] = useState(null)
+  const [evaluation, setEvaluation] = useState(null)
+  const [evaluationError, setEvaluationError] = useState(null)
+  const [evaluationLoading, setEvaluationLoading] = useState(false)
   const [strategies, setStrategies] = useState([])
   const [advisorOut, setAdvisorOut] = useState(null)
   const [advisorStrategy, setAdvisorStrategy] = useState('')
@@ -67,6 +80,9 @@ function NewsPage() {
     if (!t) return
     setRefreshing(true)
     setError(null)
+    setEvaluation(null)
+    setEvaluationError(null)
+    setEvaluationLoading(true)
     try {
       const [sigRes, alertsRes, latestRes] = await Promise.all([
         getNewsSignal(t),
@@ -81,14 +97,27 @@ function NewsPage() {
         if (current && latestArticles.some((a) => a.url === current.url)) return current
         return latestArticles[0] || null
       })
+      try {
+        const evaluationRes = await getNewsEvaluation(t === 'ALL' ? null : t, 30)
+        setEvaluation(evaluationRes.data)
+        setEvaluationError(null)
+      } catch {
+        setEvaluation(null)
+        setEvaluationError('Outcome evaluation is temporarily unavailable.')
+      } finally {
+        setEvaluationLoading(false)
+      }
       if (!latestArticles.length && (!sigRes.data || !sigRes.data.windows || sigRes.data.windows.length === 0)) {
         setError('No recent news available right now. Try refreshing later.')
       }
-    } catch (err) {
+    } catch {
       setSignal(null)
       setAlerts([])
       setArticles([])
       setSelectedArticle(null)
+      setEvaluation(null)
+      setEvaluationError('Outcome evaluation is temporarily unavailable.')
+      setEvaluationLoading(false)
       setError('Unable to fetch news right now. Please try again later.')
     } finally {
       setRefreshing(false)
@@ -102,10 +131,7 @@ function NewsPage() {
         const tickers = wlRes.data.tickers || []
         setWatchlist(tickers)
         setStrategies(stratRes.data || [])
-        const first = tickers[0] || ''
-        setTicker(first)
-        setTickerSearch(first)
-        await loadNews(first)
+        setTicker('ALL')
       } catch {
         navigate('/login')
       } finally {
@@ -130,7 +156,7 @@ function NewsPage() {
       const res = await postAdvisor(
         advisorStrategy || null,
         '',
-        ticker,
+        ticker === 'ALL' ? selectedArticle?.tickers?.[0] || null : ticker,
         selectedArticle?.title || null,
         selectedArticle?.sector || null,
         selectedArticle?.score ?? null,
@@ -165,69 +191,91 @@ function NewsPage() {
             News <span className="text-gradient-cyan">Intelligence</span>
           </h1>
           <p className="mt-2 max-w-xl text-sm text-slate-400">
-            Impact = polarity × sector/source/recency blend. HIGH auto-pauses strategies and
-            tightens stops — exits always stay one tap away, never automatic.
+            Impact = signed polarity × sector relevance × publisher prior × freshness.
+            It explains headline relevance; it is not a price prediction. Strategy safeguards
+            may react to HIGH impact, but news never places forecast-driven orders.
           </p>
         </div>
 
         <div className="glass card-3d rounded-2xl p-5">
           <div className="card-glow" />
-          <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-            Ticker
-          </label>
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-            <input
-              type="text"
-              list="news-ticker-list"
-              value={tickerSearch}
-              onChange={(event) => setTickerSearch(event.target.value.toUpperCase())}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && watchlist.includes(tickerSearch.toUpperCase())) {
-                  setTicker(tickerSearch.toUpperCase())
-                  loadNews(tickerSearch.toUpperCase())
-                }
-              }}
-              placeholder="Search ticker..."
+          <div className="grid gap-5 lg:grid-cols-2 lg:items-end">
+            <div>
+              <label htmlFor="news-ticker" className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Choose market or ticker
+              </label>
+              <select
+                id="news-ticker"
+                value={ticker}
+                onChange={(event) => setTicker(event.target.value)}
+                className="input-3d"
+              >
+                <option value="ALL">All Indian markets · all sectors</option>
+                {watchlist.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Popular tickers
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {POPULAR_TICKERS.filter(({ symbol }) => watchlist.includes(symbol)).map(({ symbol, label }) => (
+                  <button
+                    key={symbol}
+                    type="button"
+                    onClick={() => setTicker(symbol)}
+                    aria-pressed={ticker === symbol}
+                    className={`rounded-lg border px-2.5 py-2 text-[11px] font-semibold transition-colors ${
+                      ticker === symbol
+                        ? 'border-[#4b85c5] bg-[#1a2a3b] text-white'
+                        : 'border-white/10 bg-white/[0.03] text-slate-400 hover:border-white/20 hover:text-white'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Strategy Advisor (advisory-only) */}
+        <div className="glass glow-violet card-3d rounded-2xl p-6">
+          <div className="card-glow" />
+          <h2 className="font-display text-lg font-semibold text-white">Strategy Advisor</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Claude reviews a strategy + recent paper trades. Advice only — it can never place,
+            pause, or modify anything.
+          </p>
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+            <select
+              value={advisorStrategy}
+              onChange={(e) => setAdvisorStrategy(e.target.value)}
               className="input-3d flex-1"
-            />
-            <datalist id="news-ticker-list">
-              {watchlist.map((t) => (
-                <option key={t} value={t} />
+            >
+              <option value="">Overall account (no single strategy)</option>
+              {strategies.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.ticker} • {s.status})
+                </option>
               ))}
-            </datalist>
+            </select>
             <button
               type="button"
-              onClick={() => {
-                const nextTicker = tickerSearch.trim().toUpperCase()
-                if (!nextTicker || !watchlist.includes(nextTicker)) return
-                setTicker(nextTicker)
-                loadNews(nextTicker)
-              }}
-              className="btn-primary rounded-xl px-4 py-2.5 text-xs font-semibold"
+              onClick={handleAdvisor}
+              disabled={busy === 'advisor'}
+              className="btn-primary rounded-xl px-5 py-2.5 text-sm disabled:opacity-50"
             >
-              Load
+              {busy === 'advisor' ? 'Consulting…' : '✦ Ask Advisor'}
             </button>
           </div>
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {watchlist.map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => {
-                  setTicker(t)
-                  setTickerSearch(t)
-                  loadNews(t)
-                }}
-                className={`rounded-lg px-3 py-1.5 text-[11px] font-semibold transition ${
-                  ticker === t
-                    ? 'bg-gradient-to-r from-cyan-500 to-violet-600 text-white shadow-lg'
-                    : 'border border-white/10 bg-white/5 text-slate-400 hover:text-white'
-                }`}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
+          {advisorOut && (
+            <div className="mt-4 whitespace-pre-line rounded-xl bg-black/30 p-4 text-sm leading-relaxed text-slate-300">
+              {advisorOut.body}
+            </div>
+          )}
         </div>
 
         {error && (
@@ -301,7 +349,7 @@ function NewsPage() {
         <div className="glass rounded-2xl p-6">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-display text-lg font-semibold text-white">
-              Latest headlines <span className="text-slate-500">• {ticker}</span>
+              Latest headlines <span className="text-slate-500">• {ticker === 'ALL' ? 'All Indian markets' : ticker}</span>
             </h2>
             <button
               type="button"
@@ -323,7 +371,7 @@ function NewsPage() {
             <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
               <div className="space-y-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
-                  {articles.length} Headlines
+                {articles.length} Headlines · scored news and estimated impact
                 </p>
                 {articles.map((article, i) => (
                   <button
@@ -341,6 +389,8 @@ function NewsPage() {
                         <p className="text-sm font-medium text-white">{article.title}</p>
                         <p className="mt-1 text-[11px] text-slate-500">
                           {article.source || 'Unknown source'}
+                          {article.sector ? ` • ${article.sector}` : ''}
+                          {article.tickers?.length ? ` • ${article.tickers.join(', ')}` : ''}
                           {article.published_at
                             ? ` • ${new Date(article.published_at).toLocaleString('en-IN', {
                                 day: '2-digit',
@@ -351,7 +401,10 @@ function NewsPage() {
                             : ''}
                         </p>
                       </div>
-                      <ScoreChip score={article.score} />
+                      <div className="flex shrink-0 flex-col items-end gap-2">
+                        <ScoreChip score={article.score} />
+                        <ImpactChip impact={article.impact_score} band={article.impact_band} />
+                      </div>
                     </div>
                   </button>
                 ))}
@@ -371,6 +424,19 @@ function NewsPage() {
                       <p><span className="text-slate-500">Symbol:</span> {ticker}</p>
                       <p><span className="text-slate-500">Sector:</span> {selectedArticle.sector || 'UNKNOWN'}</p>
                       <p><span className="text-slate-500">Sentiment:</span> {selectedArticle.label || 'NEU'} ({Number(selectedArticle.score ?? 0).toFixed(2)})</p>
+                      <p><span className="text-slate-500">Headline impact:</span> {Number(selectedArticle.impact_score ?? 0).toFixed(3)}</p>
+                      {selectedArticle.impact_factors && (
+                        <div className="rounded-lg border border-white/8 bg-white/[0.03] p-3 text-xs">
+                          <p className="font-semibold text-slate-200">Why this impact</p>
+                          <p className="mt-1 leading-relaxed text-slate-400">{selectedArticle.impact_rationale}</p>
+                          <p className="mt-2 text-slate-500">
+                            Factors: sector {Number(selectedArticle.impact_factors.sector_weight).toFixed(2)}
+                            {' · '}publisher {Number(selectedArticle.impact_factors.source_weight).toFixed(2)}
+                            {' · '}freshness {Number(selectedArticle.impact_factors.recency_factor).toFixed(2)}
+                          </p>
+                        </div>
+                      )}
+                      <p><span className="text-slate-500">Event tags:</span> {selectedArticle.event_tags?.length ? selectedArticle.event_tags.join(', ') : 'No recognized event tag'}</p>
                       <p><span className="text-slate-500">Keywords:</span> {selectedArticle.keywords?.length ? selectedArticle.keywords.join(', ') : 'Not available'}</p>
                     </div>
                     {selectedArticle.url && (
@@ -391,46 +457,69 @@ function NewsPage() {
             </div>
           )}
           <p className="mt-4 text-[11px] leading-relaxed text-slate-600">
-            EN scored by FinBERT, Hindi by finance lexicon. A signal needs 3+ headlines before it becomes an action trigger.
+            EN uses FinBERT, Hindi uses the finance lexicon. Sentiment is not a probability of price movement;
+            impact is signed sentiment attenuated by sector relevance, publisher credibility, and freshness.
+            Event tags and keywords are evidence hints, not verified catalysts. Automated actions require 3+ headlines.
           </p>
         </div>
 
-        {/* Strategy Advisor (advisory-only) */}
-        <div className="glass glow-violet card-3d rounded-2xl p-6">
-          <div className="card-glow" />
-          <h2 className="font-display text-lg font-semibold text-white">Strategy Advisor</h2>
-          <p className="mt-1 text-xs text-slate-500">
-            Claude reviews a strategy + recent paper trades. Advice only — it can never place,
-            pause, or modify anything.
-          </p>
-          <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-            <select
-              value={advisorStrategy}
-              onChange={(e) => setAdvisorStrategy(e.target.value)}
-              className="input-3d flex-1"
-            >
-              <option value="">Overall account (no single strategy)</option>
-              {strategies.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} ({s.ticker} • {s.status})
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              onClick={handleAdvisor}
-              disabled={busy === 'advisor'}
-              className="btn-primary rounded-xl px-5 py-2.5 text-sm disabled:opacity-50"
-            >
-              {busy === 'advisor' ? 'Consulting…' : '✦ Ask Advisor'}
-            </button>
+        <section className="glass rounded-2xl p-5" aria-label="News outcome evaluation">
+          <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="font-display text-lg font-semibold text-white">
+              Outcome study <span className="text-sm font-normal text-slate-500">• {ticker === 'ALL' ? 'All tickers' : ticker} • 30 days</span>
+            </h2>
+            <span className="chip chip-gold">Uncalibrated research baseline</span>
           </div>
-          {advisorOut && (
-            <div className="mt-4 whitespace-pre-line rounded-xl bg-black/30 p-4 text-sm leading-relaxed text-slate-300">
-              {advisorOut.body}
-            </div>
+          <p className="mb-4 text-xs leading-relaxed text-slate-400">
+            Measures whether the impact sign matched later closed-bar price direction for
+            medium/high signals. Directional accuracy and gross aligned returns are historical
+            measurements—not probability forecasts or a promise of profit. Trading costs are excluded.
+          </p>
+          {evaluationLoading ? (
+            <p className="text-sm text-slate-400">Loading completed outcome data…</p>
+          ) : evaluationError ? (
+            <p className="text-sm text-amber-300">{evaluationError}</p>
+          ) : (
+            <>
+              {evaluation?.horizons?.length > 0 &&
+                evaluation.horizons.every((item) => item.eligible_signals === 0) && (
+                <p className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-200">
+                  No qualified signals have completed a measurable horizon in this period yet. The cards below show the available sample and outcome counts; accuracy is not reported without measured data.
+                </p>
+              )}
+              {(evaluation?.horizons || []).length ? (
+                <div className="grid gap-3 sm:grid-cols-3">
+                  {evaluation.horizons.map((item) => (
+                    <div key={item.horizon} className="rounded-xl border border-white/8 bg-white/[0.03] p-4">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                        {item.horizon} forward horizon
+                      </p>
+                      <p className="mt-2 font-mono text-2xl font-semibold text-white">
+                        {item.directional_accuracy_pct == null
+                          ? 'Not enough data'
+                          : `${item.directional_accuracy_pct.toFixed(1)}%`}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-400">
+                        {item.samples} measured / {item.eligible_signals} eligible
+                        {item.coverage_pct == null ? '' : ` • ${item.coverage_pct.toFixed(1)}% coverage`}
+                        {` • ${item.directional_samples} directional`}
+                        {item.mean_aligned_return_pct == null
+                          ? ''
+                          : ` • ${item.mean_aligned_return_pct >= 0 ? '+' : ''}${item.mean_aligned_return_pct.toFixed(3)}% mean aligned`}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-amber-300">The outcome service returned no horizon metrics.</p>
+              )}
+            </>
           )}
-        </div>
+          <p className="mt-3 text-[11px] text-slate-600">
+            One first-qualified observation per ticker per UTC hour. Source bars must be fully closed
+            by signal time; targets are the first fully closed bars at or after each horizon.
+          </p>
+        </section>
 
       </div>
     </PageLayout>

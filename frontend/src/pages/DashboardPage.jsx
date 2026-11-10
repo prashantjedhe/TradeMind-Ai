@@ -7,6 +7,7 @@ import { getPortfolioSummary, getOrders } from '../api/orderApi'
 import { getStrategies } from '../api/strategyApi'
 import PageLayout from '../components/common/PageLayout'
 import StatCard from '../components/common/StatCard'
+import DashboardAdvisor from '../components/dashboard/DashboardAdvisor'
 
 function formatINR(value) {
   const n = Number(value)
@@ -97,21 +98,18 @@ function DashboardPage() {
 
   return (
     <PageLayout>
-      <div className="animate-rise space-y-8">
+      <div className="animate-rise space-y-6">
         {/* Hero */}
-        <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-cyan-950/60 via-[#0a0e1a] to-violet-950/60 p-8 backdrop-blur-xl">
-          <div className="pointer-events-none absolute -right-20 -top-20 h-64 w-64 rounded-full bg-cyan-500/20 blur-3xl" />
-          <div className="pointer-events-none absolute -bottom-24 -left-16 h-64 w-64 rounded-full bg-violet-500/20 blur-3xl" />
+        <div className="glass relative overflow-hidden rounded-2xl border border-white/10 bg-[#11171f] p-8">
           <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <p className="chip chip-cyan mb-3">● Market Open • NSE Live</p>
+              <p className="chip chip-cyan mb-3">Paper Trading · NSE market data</p>
               <h1 className="font-display text-3xl font-bold tracking-tight text-white sm:text-4xl">
                 Welcome back,{' '}
                 <span className="text-gradient-cyan">{user?.username || 'Trader'}</span>
               </h1>
               <p className="mt-2 max-w-lg text-sm text-slate-400">
-                Your AI-powered paper trading terminal. Track performance, fire strategies, and let
-                the market do the talking.
+                Portfolio overview and paper-trading activity, with your market tools close at hand.
               </p>
             </div>
             <div className="flex gap-3">
@@ -158,7 +156,6 @@ function DashboardPage() {
             sub="currently held"
             icon="◈"
             tone="cyan"
-            className="card-3d"
           />
           <StatCard
             label="Total Trades"
@@ -166,7 +163,6 @@ function DashboardPage() {
             sub="all time"
             icon="⇄"
             tone="violet"
-            className="card-3d"
           />
           <StatCard
             label="Strategies"
@@ -174,34 +170,34 @@ function DashboardPage() {
             sub={`${activeStrategies} active`}
             icon="⚡"
             tone="bull"
-            className="card-3d"
           />
           <StatCard
-            label="Market Status"
-            value="LIVE"
-            sub="NSE equity"
+            label="Trading Mode"
+            value="PAPER"
+            sub="NSE instruments"
             icon="◉"
             tone="bull"
             positive={true}
-            className="card-3d"
           />
         </div>
 
+        <DashboardAdvisor />
+
         {/* Equity + positions */}
         <div className="grid gap-6 lg:grid-cols-3">
-          <div className="glass glow-cyan card-3d rounded-2xl p-6 lg:col-span-2">
+          <div className="glass rounded-2xl p-6 lg:col-span-2">
             <div className="card-glow" />
             <div className="mb-4 flex items-center justify-between">
               <h2 className="font-display text-lg font-semibold text-white">Equity Curve</h2>
-              <span className="chip chip-cyan">reconstructed</span>
+              <span className="chip chip-neutral">Estimated from filled orders</span>
             </div>
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={equityData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
                   <defs>
                     <linearGradient id="equityFill" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.45} />
-                      <stop offset="100%" stopColor="#22d3ee" stopOpacity={0.02} />
+                      <stop offset="0%" stopColor="#4b85c5" stopOpacity={0.28} />
+                      <stop offset="100%" stopColor="#4b85c5" stopOpacity={0.015} />
                     </linearGradient>
                   </defs>
                   <Tooltip
@@ -217,8 +213,8 @@ function DashboardPage() {
                   <Area
                     type="monotone"
                     dataKey="equity"
-                    stroke="#22d3ee"
-                    strokeWidth={2.5}
+                    stroke="#4b85c5"
+                    strokeWidth={2}
                     fill="url(#equityFill)"
                     dot={false}
                   />
@@ -228,7 +224,7 @@ function DashboardPage() {
           </div>
 
           {/* Positions */}
-          <div className="glass glow-violet card-3d rounded-2xl p-6">
+          <div className="glass rounded-2xl p-6">
             <div className="card-glow" />
             <div className="mb-4 flex items-center justify-between">
               <h2 className="font-display text-lg font-semibold text-white">Open Positions</h2>
@@ -238,14 +234,14 @@ function DashboardPage() {
             </div>
             {openPositions.length === 0 ? (
               <div className="flex h-48 flex-col items-center justify-center text-center">
-                <span className="mb-2 text-3xl">📭</span>
+                <span className="mb-2 h-1.5 w-8 rounded-full bg-slate-700" aria-hidden="true" />
                 <p className="text-sm text-slate-500">No open positions</p>
                 <p className="mt-1 text-[11px] text-slate-600">Place your first trade to get started.</p>
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-2">
                 {openPositions.slice(0, 5).map((p) => (
-                  <div key={p.id} className="flex items-center justify-between rounded-xl border border-white/8 bg-white/[0.03] px-3.5 py-3">
+                  <div key={p.id} className="flex items-center justify-between rounded-lg border border-white/8 bg-white/[0.03] px-3.5 py-3">
                     <div>
                       <p className="text-sm font-semibold text-white">{p.ticker.replace('.NS', '')}</p>
                       <p className="text-[10px] text-slate-500">
@@ -278,7 +274,7 @@ function DashboardPage() {
             </div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {strategies.slice(0, 3).map((s) => (
-                <div key={s.id} className="rounded-xl border border-white/8 bg-white/[0.03] p-4">
+                <div key={s.id} className="rounded-lg border border-white/8 bg-white/[0.03] p-4">
                   <div className="flex items-center justify-between">
                     <p className="text-sm font-semibold text-white">{s.name}</p>
                     <span

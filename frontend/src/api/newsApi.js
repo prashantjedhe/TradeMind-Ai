@@ -9,6 +9,15 @@ export const getNewsSentiment = (ticker, window = '1h') =>
 export const getNewsSignal = (ticker) =>
   axiosClient.get('/news/signal', { params: { ticker } })
 
+export const getNewsEvaluation = (ticker, days = 30) =>
+  axiosClient.get('/news/evaluation', { params: { ticker, days } })
+
+export const getMarketBrief = () =>
+  axiosClient.get('/news/market-brief')
+
+export const confirmMarketTrade = (proposal_id, signal_id) =>
+  axiosClient.post('/news/market-brief/confirm', { proposal_id, signal_id })
+
 export const getNewsAlerts = () =>
   axiosClient.get('/news/alerts')
 

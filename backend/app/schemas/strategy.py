@@ -2,7 +2,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, time
 from typing import List, Union, Literal, Optional
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from decimal import Decimal
 
 from app.models.order import OrderSide, SettlementType
@@ -209,5 +209,4 @@ class StrategyOut(StrategyCreate):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

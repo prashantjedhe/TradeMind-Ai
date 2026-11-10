@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from app.api.v1 import news as news_api
 from app.services import advisor
@@ -15,6 +16,9 @@ class FakeResult:
 
     def all(self):
         return self._rows
+
+    def scalars(self):
+        return SimpleNamespace(all=lambda: self._rows)
 
 
 @pytest.mark.asyncio
@@ -46,6 +50,78 @@ async def test_get_latest_news_returns_article_details(monkeypatch):
     assert result["articles"][0]["sector"] == "IT"
     assert result["articles"][0]["keywords"] == ["reliance", "growth", "earnings"]
     assert result["articles"][0]["score"] == 0.82
+
+
+@pytest.mark.asyncio
+async def test_get_latest_news_all_returns_market_articles_without_ticker_filter():
+    row = (
+        "Indian bank reports stronger quarterly results",
+        "https://example.com/bank",
+        "en",
+        datetime(2026, 10, 8, 9, 30, tzinfo=timezone.utc),
+        "Reuters",
+        "BANKING",
+        ["HDFCBANK"],
+        0.6,
+        "POS",
+        0.6,
+        {"keywords": ["banking"], "tags": ["earnings"]},
+    )
+
+    class FakeDB:
+        statement = None
+
+        async def execute(self, statement):
+            self.statement = statement
+            return FakeResult([row])
+
+    db = FakeDB()
+    user = SimpleNamespace(id=uuid.uuid4(), username="tester")
+    result = await news_api.get_latest_news("ALL", 10, user, db)
+    statement = str(db.statement.compile(dialect=postgresql.dialect()))
+
+    assert result["ticker"] == "ALL"
+    assert result["articles"][0]["ticker"] == "HDFCBANK"
+    assert result["articles"][0]["sector"] == "BANKING"
+    assert result["articles"][0]["impact_band"] in {"LOW", "MEDIUM", "HIGH"}
+    assert "news_sentiment.ticker =" not in statement
+
+
+@pytest.mark.asyncio
+async def test_get_signal_all_windows_aggregates_market_snapshots():
+    now = datetime.now(timezone.utc)
+    signal_rows = [
+        ("AAA", 0.4, 2, 0.2, now),
+        ("BBB", -0.2, 1, -0.1, now),
+    ]
+    headline_row = (
+        "Indian banks rally after policy update",
+        "https://example.com/policy",
+        "en",
+        now,
+        0.5,
+        "POS",
+    )
+
+    class FakeDB:
+        async def execute(self, statement):
+            compiled = str(statement.compile(dialect=postgresql.dialect()))
+            if "news_signals" in compiled:
+                return FakeResult(signal_rows)
+            if compiled.lstrip().startswith("SELECT news_sentiment.label"):
+                return FakeResult(["POS", "NEG"])
+            return FakeResult([headline_row])
+
+    user = SimpleNamespace(id=uuid.uuid4(), username="tester")
+    result = await news_api.get_signal_all_windows("ALL", user, FakeDB())
+
+    assert result["ticker"] == "ALL"
+    assert len(result["windows"]) == len(news_api.settings.NEWS_WINDOWS_MINUTES)
+    assert result["windows"][0]["signal"]["score"] == pytest.approx(0.2)
+    assert result["windows"][0]["signal"]["impact"] == pytest.approx(0.1)
+    assert result["windows"][0]["signal"]["article_count"] == 3
+    assert result["headlines"][0]["title"] == headline_row[0]
+    assert result["last_24h_counts"] == {"POS": 1, "NEG": 1, "NEU": 0}
 
 
 def test_news_advisor_without_api_key_returns_local_strategy(monkeypatch):

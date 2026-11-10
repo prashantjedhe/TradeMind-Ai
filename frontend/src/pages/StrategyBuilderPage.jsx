@@ -370,20 +370,33 @@ function BacktestModal({ strategy, onClose, draft = false, onCompleted }) {
 
         {result && (
           <div className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
-              <Metric label="CAGR" value={`${(result.cagr * 100).toFixed(1)}%`} tone={result.cagr >= 0 ? 'text-emerald-300' : 'text-rose-300'} />
-              <Metric label="Sharpe" value={result.sharpe.toFixed(2)} tone={result.sharpe >= 1 ? 'text-emerald-300' : 'text-amber-300'} />
-              <Metric label="Max drawdown" value={`${(result.max_drawdown * 100).toFixed(1)}%`} tone="text-rose-300" />
-              <Metric label="Win rate" value={`${(result.win_rate * 100).toFixed(1)}%`} />
-              <Metric label="Trades" value={result.total_trades} />
-              <Metric
-                label="Profit / Loss"
-                value={`₹${result.total_pnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
-                tone={result.total_pnl >= 0 ? 'text-emerald-300' : 'text-rose-300'}
-              />
-              <Metric label="Final equity" value={`₹${result.final_equity.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`} />
-            </div>
-            {equityValues.length > 1 && (
+            {result.status === 'FAILED' ? (
+              <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+                {result.error_message || 'The backtest could not be completed.'}
+              </div>
+            ) : (
+              <>
+                <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                  <Metric label="CAGR" value={`${(result.cagr * 100).toFixed(1)}%`} tone={result.cagr >= 0 ? 'text-emerald-300' : 'text-rose-300'} />
+                  <Metric label="Sharpe" value={result.sharpe.toFixed(2)} tone={result.sharpe >= 1 ? 'text-emerald-300' : 'text-amber-300'} />
+                  <Metric label="Max drawdown" value={`${(result.max_drawdown * 100).toFixed(1)}%`} tone="text-rose-300" />
+                  <Metric label="Win rate" value={`${(result.win_rate * 100).toFixed(1)}%`} />
+                  <Metric label="Trades" value={result.total_trades} />
+                  <Metric
+                    label="Profit / Loss"
+                    value={`₹${result.total_pnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
+                    tone={result.total_pnl >= 0 ? 'text-emerald-300' : 'text-rose-300'}
+                  />
+                  <Metric label="Final equity" value={`₹${result.final_equity.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`} />
+                </div>
+                {result.total_trades === 0 && (
+                  <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                    The run completed, but no trades were generated. Review the strategy conditions and historical data for this period.
+                  </p>
+                )}
+              </>
+            )}
+            {result.status !== 'FAILED' && equityValues.length > 1 && (
               <div className="rounded-xl border border-white/8 bg-black/20 p-4">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h3 className="text-sm font-semibold text-white">Equity curve</h3>
@@ -440,7 +453,6 @@ function BacktestModal({ strategy, onClose, draft = false, onCompleted }) {
 }
 
 function StrategyList({ strategies, onRefresh }) {
-  const navigate = useNavigate()
   const [backtestStrategy, setBacktestStrategy] = useState(null)
 
   const handleToggle = async (strategy) => {
@@ -808,7 +820,9 @@ function StrategyBuilderPage() {
     start_time: startTime,
     square_off_time: squareOffTime,
     trading_days: tradingDays,
-    legs: legs.map(({ key, ...leg }) => leg),
+    legs: legs.map((leg) =>
+      Object.fromEntries(Object.entries(leg).filter(([field]) => field !== 'key'))
+    ),
     risk_controls: Object.fromEntries(Object.entries(riskControls).filter(([, value]) => value !== '')),
   }), [strategyType, reference, product, orderMode, startTime, squareOffTime, tradingDays, legs, riskControls])
 

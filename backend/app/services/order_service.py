@@ -228,15 +228,16 @@ async def create_order(
     user: User,
     request: OrderCreateRequest,
     triggered_by: TriggeredBy = TriggeredBy.USER,
+    updated_reason: str | None = None,
 ) -> Order:
     """
-    Entry point for all order submissions from the API and the
-    strategy evaluator.
+    Entry point for direct user orders and explicitly confirmed
+    strategy/news proposals.
 
     MARKET orders execute immediately. LIMIT/SL/TP orders are saved
     as PENDING and picked up later by the pending-order Celery task.
-    `triggered_by` records whether the order came from the user
-    directly or was auto-fired by an ACTIVE strategy.
+    `triggered_by` records direct user submission, a strategy action,
+    or a news proposal explicitly confirmed by the user.
     """
     if request.order_type == OrderType.MARKET:
         requested_price = await get_price_or_derive(request.ticker)
@@ -269,6 +270,7 @@ async def create_order(
         trigger_price=request.limit_price,
         status=OrderStatus.PENDING,
         triggered_by=triggered_by,
+        updated_reason=updated_reason,
     )
     db.add(order)
     await db.commit()
@@ -284,6 +286,27 @@ async def try_trigger_pending_order(db: AsyncSession, order: Order, current_pric
     """
     if not check_trigger_condition(order.order_type, order.side, order.trigger_price, current_price):
         return None
+
+    if (
+        order.triggered_by == TriggeredBy.NEWS_EVENT
+        and (order.updated_reason or "").startswith("NEWS_PROPOSAL:")
+        and order.side == OrderSide.SELL
+    ):
+        position_result = await db.execute(
+            select(Position)
+            .where(
+                Position.user_id == order.user_id,
+                Position.ticker == order.ticker,
+                Position.status == PositionStatus.OPEN,
+                Position.quantity >= order.quantity,
+            )
+            .with_for_update()
+        )
+        if position_result.scalar_one_or_none() is None:
+            order.status = OrderStatus.CANCELLED
+            order.updated_reason = f"{order.updated_reason}:POSITION_CHANGED"[:255]
+            await db.commit()
+            return None
 
     fill_price = determine_fill_price(order.order_type, order.side, order.trigger_price, current_price)
 

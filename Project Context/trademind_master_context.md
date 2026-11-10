@@ -26,7 +26,7 @@ Full Title        : AI-Powered Event-Driven Paper Trading Platform
 Department        : Data Science Engineering
 Student           : Prashant (username: prashant5214)
 OS / Machine      : Windows 11 + WSL2 Ubuntu (Lenovo laptop)
-Current Status    : Phase 5 COMPLETE — Next: Phase 6 (Copy Trading)
+Current Status    : Phase 7 COMPLETE — Phase 8 (Testing, Polish & Deployment) IN PROGRESS
 
 Core Innovation   : A News Intelligence Engine that detects
                     financial news in near real-time, runs FinBERT
@@ -90,9 +90,11 @@ F2. News Intelligence Engine ✅ COMPLETE
     - Google News RSS fetch (EN+HI, 40 feeds, every 5 min)
     - RAKE keyword extraction (EN only, <5ms/article)
     - FinBERT sentiment (EN) + bilingual lexicon (HI/transliterated)
-    - Signed polarity: POS → +conf, NEG → -conf, NEU → P(pos)-P(neg)
+    - FinBERT signed expected polarity: P(pos)-P(neg); winning-class confidence kept separate
+    - Lexicon score uses smoothing to avoid saturating from a few positive/negative terms
     - Expert-system sector mapper: 63 tickers → 9 sectors
-    - Weighted-blend impact formula: polarity × (W_SECTOR·sector + W_SOURCE·source + W_RECENCY·recency)
+    - Attenuating impact formula: signed polarity × sector relevance × source credibility × recency
+    - Recent legacy headlines are re-scored once after scorer version changes
     - Impact bands: HIGH (≥0.70), MEDIUM (≥0.40), LOW (<0.40)
     - Action engine: pause/resume, tighten SL, reduce lot size, exit-on-news
     - Decay-weighted aggregation + z-score vs 7-day baseline
@@ -118,7 +120,7 @@ F4. F&O (Futures & Options) Module ✅ COMPLETE
     - Strategy evaluation resolves F&O→underlying for OHLCV bars
     - F&O STT rates in fee calculator
 
-F5.  Copy Trading Module — PENDING (Phase 6)
+F5.  Copy Trading Module — REMOVED (design decision: replaced by League system)
 F6. User Auth and Profiles ✅ COMPLETE
     - Signup, login, JWT refresh rotation
     - Redis blacklist for logout (jti-based)
@@ -142,7 +144,7 @@ F9. AI-Generated Trade Journal ✅ COMPLETE
     - Joins with news events table
     - Claude API generates structured analysis
 
-F10. Paper Trading League / Competition — PENDING (Phase 8)
+F10. Paper Trading League / Competition ✅ COMPLETE (Phase 7)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 4. COMPLETE FOLDER STRUCTURE
@@ -162,18 +164,18 @@ trademind-ai/
 │   │   │       ├── __init__.py
 │   │   │       ├── auth.py       # signup, login, refresh, logout, /me
 │   │   │       ├── users.py      # GET /users/me
-│   │   │       ├── orders.py     # POST/GET /orders/, POST /orders/exit-on-news
+│   │   │       ├── orders.py     # POST/GET /orders/, POST /orders/exit-on-news, /manual-exit
 │   │   │       ├── portfolio.py  # /portfolio/summary, /history
 │   │   │       ├── market.py     # /watchlist, /prices, /fno/chain, /fno/quote
 │   │   │       ├── strategies.py # CRUD strategies, templates
-│   │   │       └── news.py       # /news/latest, /sentiment, /signal, /alerts, /advisor, /journal
+│   │   │       └── news.py       # News signals, explainability, outcomes, alerts, advisor
 │   │   ├── models/
 │   │   │   ├── __init__.py       # imports all models for Alembic
 │   │   │   ├── user.py           # UUID PK, email, username, balance
 │   │   │   ├── order.py          # TriggeredBy enum, triggered_by FK
 │   │   │   ├── portfolio.py      # Position with signed qty
 │   │   │   ├── strategy.py       # single-action + multi-leg option configuration
-│   │   │   ├── news.py           # NewsArticle, NewsSentiment, NewsSignal (impact/band)
+│   │   │   ├── news.py           # NewsArticle, NewsSentiment, NewsSignal + outcomes
 │   │   │   ├── ohlcv.py          # OHLCVBar (ticker+interval+ts unique)
 │   │   │   └── trade_journal.py  # TradeJournal for advisor output
 │   │   ├── schemas/
@@ -197,17 +199,20 @@ trademind-ai/
 │   │   │   ├── news_sentiment.py # FinBERT singleton + lexicon hybrid
 │   │   │   ├── news_keywords.py  # RAKE extraction + finance tags
 │   │   │   ├── news_sector.py    # Sector mapper (63 tickers, 180+ keywords)
-│   │   │   ├── news_impact.py    # Weighted-blend formula + bands
+│   │   │   ├── news_impact.py    # Multiplicative attenuation + bands
 │   │   │   ├── news_ingest.py    # RSS fetch + dedupe + scoring
 │   │   │   ├── news_signal_service.py # Aggregation + z-score + impact
+│   │   │   ├── news_outcomes.py  # Closed-bar forward-return baseline evaluation
 │   │   │   └── news_actions.py   # Pause/resume, SL tighten, exit-on-news
 │   │   ├── workers/
-│   │   │   ├── celery_app.py     # Beat: prices 15s, pending 15s, strategy 60s, news 5min, OHLCV 15min
+│   │   │   ├── celery_app.py     # Beat: prices 15s, pending 15s, strategy 60s, news 5min, OHLCV 15min, league daily
 │   │   │   ├── market_data.py    # Price cache + F&O derivation + Redis aclose
 │   │   │   ├── pending_orders.py # Auto-trigger PENDING orders
 │   │   │   ├── ohlcv_sync.py     # OHLCV bar sync
 │   │   │   ├── strategy_evaluator.py # Edge-triggered eval
-│   │   │   └── news_ingest.py    # Celery news ingest+score+action
+│   │   │   ├── news_ingest.py    # Celery news ingest+score+action
+│   │   │   ├── news_outcomes.py  # Periodic outcome persistence
+│   │   │   └── league_reset.py   # Daily auto-finalize expired leagues
 │   │   └── utils/
 │   │       ├── indicators.py     # RSI, EMA, SMA, MACD, VOLUME, PRICE, SENTIMENT
 │   │       └── market_data.py    # yFinance client, NIFTY→^NSEI mapping
@@ -238,7 +243,7 @@ trademind-ai/
 │   │   │   ├── LoginPage.jsx
 │   │   │   ├── RegisterPage.jsx
 │   │   │   ├── DashboardPage.jsx
-│   │   │   ├── TradingPage.jsx   # + Exit on news button per position
+│   │   │   ├── TradingPage.jsx   # Manual and news exit actions per position
 │   │   │   ├── FOPage.jsx        # Option chain + futures + trade ticket
 │   │   │   ├── StrategyBuilderPage.jsx # Builder, templates, backtest, multi-leg options
 │   │   │   ├── NewsPage.jsx      # Impact bands, alerts, headlines, advisor, journal
@@ -312,9 +317,6 @@ NEWS_MIN_ARTICLES=3
 NEWS_HALF_LIFE_HOURS=6.0
 NEWS_HIGH_THRESHOLD=0.70
 NEWS_MED_THRESHOLD=0.40
-NEWS_W_SECTOR=0.4
-NEWS_W_SOURCE=0.3
-NEWS_W_RECENCY=0.3
 NEWS_RECENCY_HALF_LIFE_MIN=120.0
 NEWS_FINBERT_ID=ProsusAI/finbert
 
@@ -347,7 +349,7 @@ MODEL 1 — FinBERT (EN only):
 MODEL 2 — Bilingual Lexicon (HI + fallback):
   Type            : Dictionary-based sentiment scorer
   Coverage        : Devanagari Hindi + transliterated Hindi + English finance terms
-  Signed polarity : POS → +confidence, NEG → -confidence, NEU → P(pos)-P(neg)
+  Signed polarity : P(positive) − P(negative); confidence is separate
   Speed           : <1ms per article
   Used for        : All non-English text + FinBERT budget overflow
 
@@ -372,10 +374,12 @@ MODEL 5 — Claude API:
   Implementation  : stdlib HTTP (no SDK dependency)
   Fail mode       : Advisory-only, returns error message when key unset
 
-IMPACT SCORE FORMULA (corrected — weighted blend):
-  impact = polarity × (W_SECTOR·sector + W_SOURCE·source + W_RECENCY·recency)
+IMPACT SCORE FORMULA (attenuating factors):
+  impact = signed_polarity × sector_weight × source_weight × recency
 
-  polarity        : SIGNED — POS→+conf, NEG→-conf, NEU→P(pos)-P(neg)
+  FinBERT polarity: P(positive) − P(negative); winning-class probability
+                    is retained separately as confidence (not sentiment).
+  Lexicon polarity: signed lexicon score in [-1, +1].
   sector_weight   : BANK=0.95, IT=0.90, OIL=0.88, AUTO=0.82,
                     FMCG=0.80, METAL=0.78, PHARMA=0.75, REALTY=0.65,
                     INDEX=1.00, UNKNOWN=0.60
@@ -384,8 +388,20 @@ IMPACT SCORE FORMULA (corrected — weighted blend):
                     cnbc=0.85, default=0.50
   recency         : max(0.1, 1.0 − (age_minutes / 120))
 
-  Proof: typical story → 0.62 MEDIUM (was 0.51 with multiplicative formula)
-         perfect story → 0.91 HIGH
+  Sector, source credibility, and recency attenuate sentiment and never
+  inflate it. Publisher matching normalizes spaces/punctuation.
+  Thresholds remain configurable; evaluate them against time-ordered
+  labeled outcomes before treating impact bands as predictive.
+
+NEWS OUTCOME EVALUATION (research-only):
+  GET /api/v1/news/evaluation?ticker=...&days=30 reports 15m, 1h, and
+  1d realized outcomes for qualified MEDIUM/HIGH 15m signal snapshots.
+  The first qualified observation per ticker per UTC hour is recorded.
+  Only fully closed bars at or after the requested forward horizon are
+  used; accuracy is not a probability forecast and gross aligned returns
+  exclude fees/slippage. This evaluator never places or changes orders.
+  Per-headline responses include impact factors, event tags, keywords,
+  and a plain-language rationale.
 
 THRESHOLDS (env-tunable):
   HIGH   : score ≥ 0.70
@@ -542,7 +558,7 @@ PHASE 3 — ✅ COMPLETE (Week 5)
 PHASE 4 — ✅ COMPLETE (Weeks 6–7)
   News Intelligence (FinBERT + Action Engine + Advisor)
   FinBERT singleton (EN) + bilingual lexicon (HI), RAKE keywords,
-  sector mapper (63 tickers), weighted-blend impact formula,
+  sector mapper (63 tickers), attenuating impact formula,
   action engine (pause/resume, SL tighten, lot multiplier, exit-on-news),
   Claude advisor + trade journal, z-score aggregation,
   Docker image with FinBERT baked at /opt/hf_cache.
@@ -554,19 +570,23 @@ PHASE 5 — ✅ COMPLETE (Weeks 8–9)
   per-strategy/draft backtest UI with equity curve + WFO results.
   Backtest result schema synchronized with the current ORM model.
 
-PHASE 6 — ⬜ NEXT (Week 10)
-  Copy Trading
-  Strategy publish/unpublish, follower model, trade replication,
-  risk controls, marketplace + leaderboard.
+PHASE 6 — REMOVED
+  Copy Trading was removed from scope and replaced by the League milestone.
 
-PHASE 7 — ⬜ PENDING (Weeks 11–12)
-  League + Competition Mode
-  Monthly competitions, Sharpe Ratio ranking, badge system,
-  trophy + marketplace highlight, Celery beat monthly reset.
+PHASE 7 — ✅ COMPLETE (Weeks 10–12)
+  League & Competition Mode  [Copy Trading REMOVED — replaced by League system]
+  League model: Competition, LeagueEntry, Badge (6 badge types)
+  Real metrics from orders (Sharpe, return, drawdown, win rate, P&L)
+  Celery beat daily league auto-finalization (midnight IST)
+  Sharpe-ranked leaderboard with usernames
+  Badge awards: Top Trader, Drawdown Master, Consistent Performer, News Ninja, First Win
+  LeaguePage.jsx: full UI with tabs (All Leagues, My Entries, Create), badge showcase
 
-PHASE 8 — ⬜ PENDING (Weeks 13–16)
+PHASE 8 — 🔄 IN PROGRESS (Weeks 13–16)
   Testing, Polish & Deployment
-  Dashboard assembly, responsive layout, pytest (70%+ coverage),
+  ORM registry and migration parity checks pass; FinBERT inference is verified.
+  Backend suite is passing, but measured coverage is currently below the 70% target.
+  Remaining: broaden service/API coverage, authenticated dashboard/mobile review,
   Locust load test, security hardening, CI/CD, Render + Vercel deploy,
   README, API docs, academic report, presentation, demo video.
 
@@ -594,10 +614,12 @@ WHY bilingual lexicon for HI:
   FinBERT only handles English. Hindi financial news needs coverage.
   Dictionary-based scorer is fast (<1ms) and free.
 
-WHY weighted-blend not multiplicative impact:
-  Multiplicative formula made HIGH unreachable (typical = 0.51).
-  Weighted blend: polarity × (sector + source + recency) = 0.62 typical.
-  All weights env-tunable, recalibratable from logged signals.
+WHY attenuating impact factors:
+  A weighted average of sector/source/recency was close to 1 for most
+  fresh headlines, so weak sourcing or relevance did not reduce a score.
+  Impact now multiplies signed polarity by sector, source, and recency
+  factors. These are priors, not empirically calibrated probabilities;
+  accuracy still requires labeled, chronological evaluation.
 
 WHY Claude API for Advisor + Journal:
   Strategy advisor needs reasoning, not just classification.
@@ -703,14 +725,15 @@ WHY --concurrency=2 for celery worker:
 - Never suggest starting over — always build incrementally.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-16. NEXT STEPS (Phase 6 — Copy Trading)
+16. NEXT STEPS (Phase 8 — Testing, Polish & Deployment)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-When starting Phase 6, implement:
-1. Strategy publish/unpublish controls
-2. Follower model and subscription risk settings
-3. Mirrored paper trades with allocation and risk limits
-4. Public strategy marketplace and leaderboard
+Continue Phase 8 by:
+1. Expanding backend/API tests toward the 70% coverage target.
+2. Running the 50-user Locust test and reviewing its measured results.
+3. Completing authenticated dashboard/mobile checks.
+4. Configuring production API/frontend URLs, CORS origins, and provider secrets.
+5. Deploying only after production settings and user authorization are confirmed.
 
 ═══════════════════════════════════════════════════════════════
 END OF MASTER CONTEXT DOCUMENT

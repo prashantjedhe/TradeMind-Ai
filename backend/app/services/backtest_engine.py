@@ -388,10 +388,7 @@ def simulate_strategy(
 
         if tradable and i >= required - 1 and spec.root_condition:
             hist = clean.iloc[: i + 1]
-            try:
-                signal = evaluate_condition_tree(hist, spec.root_condition, {})
-            except Exception:
-                signal = False
+            signal = evaluate_condition_tree(hist, spec.root_condition, {})
             if signal and port.is_flat and pending is None:
                 pending = {
                     "side": spec.action_side,
@@ -406,6 +403,13 @@ def simulate_strategy(
                     pending = {"side": OrderSide.BUY, "type": "MARKET", "reason": "SIGNAL_COVER", "limit": None}
                 elif (not want_long) and port.qty > 0:
                     pending = {"side": OrderSide.SELL, "type": "MARKET", "reason": "SIGNAL_EXIT", "limit": None}
+        elif tradable and i == required - 1 and spec.root_condition is None and pending is None:
+            pending = {
+                "side": spec.action_side,
+                "type": spec.action_order_type.value,
+                "reason": "BUY_AND_HOLD_BASELINE",
+                "limit": spec.action_limit_price,
+            }
 
         if tradable:
             equity_pts.append((ts, float(port.mark(c))))

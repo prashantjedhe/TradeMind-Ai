@@ -4,7 +4,8 @@ from app.models.portfolio import Position, PositionStatus
 from app.models.ohlcv import OHLCVBar, BarInterval
 from app.models.strategy import Strategy, StrategyTimeframe, StrategyStatus, StrategyActionOrderType
 from app.models.trade_journal import TradeJournal
-from app.models.news import NewsArticle, NewsSentiment, NewsSignal
+from app.models.trade_proposal import TradeProposal
+from app.models.news import NewsArticle, NewsSentiment, NewsSignal, NewsSignalOutcome
 from app.models.backtest_copy_league import (
     BacktestResult, BacktestStatus, BacktestKind,
     League, LeagueCompetition, LeagueEntry,
@@ -29,7 +30,9 @@ __all__ = [
     "NewsArticle",
     "NewsSentiment",
     "NewsSignal",
+    "NewsSignalOutcome",
     "TradeJournal",
+    "TradeProposal",
     "BacktestResult", "BacktestStatus", "BacktestKind",
     "League", "LeagueCompetition", "LeagueEntry",
     "Badge", "BadgeType",

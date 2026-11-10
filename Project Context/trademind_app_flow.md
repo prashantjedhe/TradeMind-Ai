@@ -19,6 +19,7 @@ All routes are protected by `ProtectedRoute` (JWT guard) except `/login` and `/r
 /fno            → FOPage              (protected)
 /strategies     → StrategyBuilderPage  (protected)
 /news           → NewsPage            (protected)
+/league         → LeaguePage          (protected)
 /profile        → ProfilePage         (protected)
 *               → Redirect to /login
 ```
@@ -30,12 +31,12 @@ All routes are protected by `ProtectedRoute` (JWT guard) except `/login` and `/r
 Visible on all protected pages. Top bar, sticky, dark theme.
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  [T] TradeMind AI    Dashboard  Trading  F&O  News  Strategies  │
-│      Paper Trading     ◈        ⇄      ◆   📰      ⚡         │
-│                                                      Profile ◉  │
-│                                                    [Logout]     │
-└──────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│  [T] TradeMind AI    Dashboard  Trading  F&O  News  Strategies  League │
+│      Paper Trading     ◈        ⇄      ◆   📰      ⚡         🏆   │
+│                                                            Profile ◉   │
+│                                                          [Logout]      │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Desktop**: horizontal nav links + user avatar + logout button
@@ -111,7 +112,7 @@ Visible on all protected pages. Top bar, sticky, dark theme.
 │  │ INFY   │  50 │ ₹1,420│ ₹1,415 │  -₹250│[Exit] │ │
 │  │        │     │       │        │       │[📰Exit]│ │
 │  └────────┴─────┴───────┴────────┴───────┴────────┘ │
-│                    Exit on news = user-click only    │
+│    [Exit manually] [Exit on news] = user-click only  │
 │                                                     │
 │  Pending Orders                                     │
 │  ┌────────┬─────┬────────┬────────┬────────────────┐│
@@ -151,6 +152,16 @@ User clicks "📰 Exit" on position row
   → triggered_by = NEWS_EVENT
   → Position CLOSED, balance restored
   → Order returned
+```
+
+**Manual exit flow:**
+```
+User clicks "Exit manually" on a position row
+  → POST /orders/manual-exit { ticker }
+  → Finds OPEN position and submits an opposite-side MARKET order
+  → Uses the standard fill path (slippage + fees) and entry settlement
+  → triggered_by = USER; updated_reason = USER_MANUAL_EXIT
+  → Position and balance updated; order returned
 ```
 
 ---
@@ -459,25 +470,25 @@ User selects strategy + days
 1. Google News RSS detects "KOTAKBANK: RBI raises interest rates"
    → Ingested every 5 min by Celery
 
-2. FinBERT scores: NEGATIVE, confidence 0.88
-   → polarity = -0.88
+2. FinBERT scores: NEGATIVE
+   → polarity = P(positive) − P(negative) = -0.88
+   → winning-class confidence is tracked separately, not used as polarity
    → Sector: BANK (weight 0.95)
    → Source: reuters (weight 0.95)
-   → Recency: 0.95 (2 min old)
-   → impact = -0.88 × (0.4×0.95 + 0.3×0.95 + 0.3×0.95) = -0.84
-   → |impact| = 0.84 ≥ 0.70 → HIGH
+   → Recency: 0.983 (2 min old)
+   → impact = -0.88 × 0.95 × 0.95 × 0.983 = -0.781
+   → |impact| = 0.781 ≥ 0.70 → HIGH
 
 3. Action engine fires:
-   → Pause strategy "Bank RSI" (status=PAUSED, paused_reason="RBI hike")
-   → Tighten SL on pending KOTAKBANK orders (move trigger closer)
-   → Reduce lot multiplier to 0.57
-   → Create in-app alert for user
+   → For configured strategies, apply the existing guarded pause/risk policy
+   → Create an in-app alert; no forecast-driven buy/sell is generated
 
 4. User sees on /strategies:
-   → "Bank RSI" shows ⚠ PAUSED, reason "RBI hike", multiplier 0.57
+   → Any pause/risk action includes the triggering headline as its reason
 
 5. User sees on /news:
-   → HIGH impact alert with headline + action taken
+   → Headline, sector/source/freshness factors, event tags, and impact rationale
+   → 15m/1h/1d closed-bar outcome study (research baseline, not a prediction)
 
 6. After 2 calm cycles OR 120min:
    → Strategy resumes (status=ACTIVE, multiplier=1.0)
@@ -566,17 +577,19 @@ Celery Beat → market_data.refresh_watchlist_prices
 
 ### News Ingest Cycle (every 5min)
 ```
-Celery Beat → news_ingest.ingest_news
+Celery Beat → news_ingest.ingest_news (5 min)
+Celery Beat → news_outcomes.evaluate_news_outcomes (15 min)
   → Google News RSS (EN + HI, 40 feeds)
   → Filter: last 6h, unique url_hash
   → For each article:
-    → FinBERT (EN) or lexicon (HI) → signed polarity
+    → FinBERT expected polarity (EN) or moderated bilingual lexicon (HI)
     → RAKE → keywords (EN only)
     → Sector mapper → sector + tickers
-    → Impact scorer → weighted-blend score + band
+    → Impact scorer → signed polarity × sector × source × recency
   → Bulk upsert: news_articles, news_sentiment, news_signals
   → Aggregate: decay-weighted score per ticker per window
   → Action engine: pause/resume, SL tighten, lot multiplier
+  → One-time re-score of recent headlines when the scoring version changes
   → Dispose engine, close Redis
 ```
 

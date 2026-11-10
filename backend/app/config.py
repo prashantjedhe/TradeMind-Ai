@@ -1,4 +1,13 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def async_database_url(url: str) -> str:
+    """Normalize Render/PostgreSQL URLs for SQLAlchemy's asyncpg driver."""
+    if url.startswith("postgres://"):
+        return "postgresql+asyncpg://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        return "postgresql+asyncpg://" + url[len("postgresql://"):]
+    return url
 
 
 class Settings(BaseSettings):
@@ -9,6 +18,12 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     DEFAULT_VIRTUAL_BALANCE: float = 1000000.0
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
 
     # Fixed watchlist of liquid NSE stocks, kept warm in the Redis
     # price cache regardless of whether any user holds a position.
@@ -48,16 +63,13 @@ class Settings(BaseSettings):
     NEWS_LOOKBACK_DAYS: int = 7  # z-score baseline window
     NEWS_USER_AGENT: str = "Mozilla/5.0 (TradeMindAI paper-trading research bot)"
 
-    # ── News Impact Engine (corrections baked in) ────────────────
-    # impact = polarity × (W_SECTOR·sector + W_SOURCE·source + W_REC·recency)
-    # polarity is SIGNED (+conf POS / -conf NEG / P(pos)-P(neg) NEU).
-    # Thresholds are env-tunable defaults; recalibrate by percentile
-    # from the news_signals log (HIGH ≈ 95th pct of |impact|).
+    # ── News Impact Engine ───────────────────────────────────────
+    # impact = signed expected polarity × sector × source × recency.
+    # Multipliers attenuate a headline; they cannot inflate sentiment.
+    # Thresholds are initial paper-trading defaults, not calibrated
+    # probabilities of a future price move.
     NEWS_HIGH_THRESHOLD: float = 0.70
     NEWS_MED_THRESHOLD: float = 0.40
-    NEWS_W_SECTOR: float = 0.4
-    NEWS_W_SOURCE: float = 0.3
-    NEWS_W_RECENCY: float = 0.3
     NEWS_RECENCY_HALF_LIFE_MIN: float = 120.0  # recency = max(0.1, 1 - age/half_life)
     NEWS_RECENCY_FLOOR: float = 0.1
     NEWS_IMPACT_MAX_AGE_MIN: int = 360  # articles older than this never score
@@ -99,8 +111,7 @@ class Settings(BaseSettings):
     OPENROUTER_TIMEOUT_S: float = 45.0
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1/chat/completions"
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
 
 
 settings = Settings()
